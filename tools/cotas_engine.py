@@ -126,6 +126,15 @@ def is_thread_callout(text: str) -> bool:
     )
 
 
+def is_date_like_text(text: str) -> bool:
+    clean = normalize_text(text).strip()
+    return bool(
+        re.fullmatch(r"\d{1,2}/\d{1,2}/\d{2,4}", clean)
+        or re.fullmatch(r"\d{4}-\d{1,2}-\d{1,2}", clean)
+        or re.fullmatch(r"\d{1,2}[.-]\d{1,2}[.-]\d{2,4}", clean)
+    )
+
+
 def tolerance_info(text: str) -> dict[str, Any]:
     clean = normalize_text(text)
     unit_match = re.search(r"(?i)\b(mm|cm|in|deg|grados)\b|\"", clean)
@@ -1476,7 +1485,7 @@ def generate_tolerance_workbook(
     title = "Reporte de tolerancias por cota"
     ws["A1"] = title
     ws["A1"].font = Font(bold=True, size=14)
-    ws.merge_cells("A1:J1")
+    ws.merge_cells("A1:F1")
 
     metadata = job or {}
     ws["A2"] = "Cliente"
@@ -1490,15 +1499,11 @@ def generate_tolerance_workbook(
 
     headers = [
         "#",
-        "Pagina",
         "Texto cota",
         "Nominal",
-        "Unidad",
         "Decimales",
         "Tol +",
         "Tol -",
-        "Limite min",
-        "Limite max",
     ]
     header_row = 4
     for col, header in enumerate(headers, start=1):
@@ -1510,34 +1515,30 @@ def generate_tolerance_workbook(
     tolerance_candidates = [
         candidate
         for candidate in sorted(candidates, key=lambda item: (item.page, item.number))
-        if not is_thread_callout(candidate.text)
+        if not is_thread_callout(candidate.text) and not is_date_like_text(candidate.text)
     ]
     for row, candidate in enumerate(tolerance_candidates, start=header_row + 1):
         info = tolerance_info(candidate.text)
         values = [
             candidate.number,
-            candidate.page,
             candidate.text,
             info["nominal"],
-            info["unit"],
             info["decimals"],
             info["tol_plus"],
             info["tol_minus"],
-            info["minimum"],
-            info["maximum"],
         ]
         for col, value in enumerate(values, start=1):
             cell = ws.cell(row=row, column=col, value=value)
-            if col in {4, 7, 8, 9, 10} and value is not None:
+            if col in {3, 5, 6} and value is not None:
                 cell.number_format = "0.0000"
-            if col in {1, 2, 6}:
+            if col in {1, 4}:
                 cell.alignment = Alignment(horizontal="center")
 
-    widths = [8, 10, 34, 12, 10, 10, 12, 12, 14, 14]
+    widths = [8, 36, 12, 10, 12, 12]
     for index, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(index)].width = width
     ws.freeze_panes = "A5"
-    ws.auto_filter.ref = f"A{header_row}:J{max(header_row + 1, header_row + len(tolerance_candidates))}"
+    ws.auto_filter.ref = f"A{header_row}:F{max(header_row + 1, header_row + len(tolerance_candidates))}"
 
     rules = wb.create_sheet("Reglas")
     rules["A1"] = "Reglas de tolerancia general"
@@ -1549,6 +1550,7 @@ def generate_tolerance_workbook(
     rules.append(["Prioridad", "Si la cota trae tolerancia explicita, se usa esa tolerancia antes de la regla general."])
     rules.append(["Roscas", "No se incluyen llamadas tipo 4-40 UNC, 6-32 UNC, etc."])
     rules.append(["Radios", "Las cotas tipo R.063 se calculan usando el valor despues de R."])
+    rules.append(["Fechas", "No se incluyen textos con formato de fecha como 10/22/2025."])
     for col in range(1, 3):
         rules.column_dimensions[get_column_letter(col)].width = 28
 
