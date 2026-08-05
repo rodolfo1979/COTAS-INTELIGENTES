@@ -8,7 +8,7 @@ Group=www-data
 WorkingDirectory=/var/www/cotas-inteligentes
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=-/etc/cotas-inteligentes.env
-ExecStart=/var/www/cotas-inteligentes/.venv/bin/python tools/start_server.py 8088
+ExecStart=/var/www/cotas-inteligentes/.venv/bin/python tools/web_app.py 8088
 Restart=always
 RestartSec=5
 
