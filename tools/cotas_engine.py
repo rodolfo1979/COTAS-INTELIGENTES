@@ -115,6 +115,11 @@ def tolerance_by_decimals(decimal_places: int) -> float | None:
     return None
 
 
+def is_thread_callout(text: str) -> bool:
+    clean = normalize_text(text).upper()
+    return bool(re.search(r"\b\d+\s*-\s*\d+\b", clean) and re.search(r"\b(?:UNC|UNF|UNEF|THREAD|THD)\b", clean))
+
+
 def tolerance_info(text: str) -> dict[str, Any]:
     clean = normalize_text(text)
     unit_match = re.search(r"(?i)\b(mm|cm|in|deg|grados)\b|\"", clean)
@@ -139,7 +144,8 @@ def tolerance_info(text: str) -> dict[str, Any]:
             elif sign == "-" and explicit_minus is None:
                 explicit_minus = -abs(value)
 
-    value_tokens = re.findall(r"(?<![A-Za-z])(?:\d+\.\d+|\.\d+|\d+)(?![A-Za-z])", clean)
+    radius_match = re.search(r"(?i)\bR\s*((?:\d+\.\d+|\.\d+|\d+))", clean)
+    value_tokens = [radius_match.group(1)] if radius_match else re.findall(r"(?<![A-Za-z])(?:\d+\.\d+|\.\d+|\d+)(?![A-Za-z])", clean)
     nominal_token = ""
     nominal: float | None = None
     for token in value_tokens:
@@ -1468,7 +1474,7 @@ def generate_tolerance_workbook(
     title = "Reporte de tolerancias por cota"
     ws["A1"] = title
     ws["A1"].font = Font(bold=True, size=14)
-    ws.merge_cells("A1:L1")
+    ws.merge_cells("A1:J1")
 
     metadata = job or {}
     ws["A2"] = "Cliente"
@@ -1491,8 +1497,6 @@ def generate_tolerance_workbook(
         "Tol -",
         "Limite min",
         "Limite max",
-        "Fuente tolerancia",
-        "Motivo deteccion",
     ]
     header_row = 4
     for col, header in enumerate(headers, start=1):
@@ -1501,7 +1505,12 @@ def generate_tolerance_workbook(
         cell.fill = PatternFill("solid", fgColor="1F2937")
         cell.alignment = Alignment(horizontal="center")
 
-    for row, candidate in enumerate(sorted(candidates, key=lambda item: (item.page, item.number)), start=header_row + 1):
+    tolerance_candidates = [
+        candidate
+        for candidate in sorted(candidates, key=lambda item: (item.page, item.number))
+        if not is_thread_callout(candidate.text)
+    ]
+    for row, candidate in enumerate(tolerance_candidates, start=header_row + 1):
         info = tolerance_info(candidate.text)
         values = [
             candidate.number,
@@ -1514,8 +1523,6 @@ def generate_tolerance_workbook(
             info["tol_minus"],
             info["minimum"],
             info["maximum"],
-            info["source"],
-            candidate.reason,
         ]
         for col, value in enumerate(values, start=1):
             cell = ws.cell(row=row, column=col, value=value)
@@ -1524,11 +1531,11 @@ def generate_tolerance_workbook(
             if col in {1, 2, 6}:
                 cell.alignment = Alignment(horizontal="center")
 
-    widths = [8, 10, 34, 12, 10, 10, 12, 12, 14, 14, 24, 26]
+    widths = [8, 10, 34, 12, 10, 10, 12, 12, 14, 14]
     for index, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(index)].width = width
     ws.freeze_panes = "A5"
-    ws.auto_filter.ref = f"A{header_row}:L{max(header_row + 1, header_row + len(candidates))}"
+    ws.auto_filter.ref = f"A{header_row}:J{max(header_row + 1, header_row + len(tolerance_candidates))}"
 
     rules = wb.create_sheet("Reglas")
     rules["A1"] = "Reglas de tolerancia general"
@@ -1538,6 +1545,8 @@ def generate_tolerance_workbook(
     rules.append([3, 0.005])
     rules.append([4, 0.001])
     rules.append(["Prioridad", "Si la cota trae tolerancia explicita, se usa esa tolerancia antes de la regla general."])
+    rules.append(["Roscas", "No se incluyen llamadas tipo 4-40 UNC, 6-32 UNC, etc."])
+    rules.append(["Radios", "Las cotas tipo R.063 se calculan usando el valor despues de R."])
     for col in range(1, 3):
         rules.column_dimensions[get_column_letter(col)].width = 28
 
