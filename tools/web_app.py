@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 STORAGE = ROOT / "storage"
 UPLOADS = STORAGE / "uploads"
 CLIENTS_FILE = ROOT / "data" / "clients.json"
-ENGINE_VERSION = "2026-08-05-tolerance-xlsx-minimal"
+ENGINE_VERSION = "2026-08-05-short-admin-dates"
 AUTH_USER = os.getenv("COTAS_ADMIN_USER", "admin")
 AUTH_PASSWORD = os.getenv("COTAS_ADMIN_PASSWORD", "")
 AUTH_SECRET = os.getenv("COTAS_SECRET_KEY", "")
@@ -68,6 +68,11 @@ def job_title(job: dict) -> str:
 def display_client(value: object) -> str:
     client = str(value or "Sin cliente").strip()
     return client.upper() if client else "Sin cliente"
+
+
+def display_date(value: object) -> str:
+    text = str(value or "").strip()
+    return text[:10] if len(text) >= 10 else text
 
 
 def auth_configured() -> bool:
@@ -517,7 +522,7 @@ class App(BaseHTTPRequestHandler):
   <td>{esc(row['part_number'])}</td>
   <td>{esc(row['drawing_number'])}</td>
   <td>{esc(row['revision'])}</td>
-  <td>{esc(row['created_at'])}</td>
+  <td>{esc(display_date(row['created_at']))}</td>
 </tr>"""
             for row in rows
         )
@@ -578,7 +583,7 @@ class App(BaseHTTPRequestHandler):
   <td>{esc(job.get('part_number'))}</td>
   <td>{esc(job.get('revision'))}</td>
   <td>{self.candidate_count(job)}</td>
-  <td>{esc(job.get('created_at'))}</td>
+  <td>{esc(display_date(job.get('created_at')))}</td>
   <td>
     <form class="inline-form" method="post" action="/delete/{quote(job['id'])}?page={current_page}" onsubmit="return confirm('Eliminar este plano y sus archivos?');">
       <button class="danger" type="submit">Eliminar</button>
