@@ -1,0 +1,15 @@
+[Unit]
+Description=COTAS INTELIGENTES Python web app
+After=network.target
+
+[Service]
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/cotas-inteligentes
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/var/www/cotas-inteligentes/.venv/bin/python tools/start_server.py 8088
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
