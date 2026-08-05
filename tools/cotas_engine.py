@@ -1474,6 +1474,7 @@ def generate_tolerance_workbook(
     job: dict[str, Any] | None = None,
 ) -> None:
     from openpyxl import Workbook
+    from openpyxl.drawing.image import Image as ExcelImage
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
 
@@ -1488,9 +1489,16 @@ def generate_tolerance_workbook(
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
     ws.merge_cells("A1:B5")
-    ws["A1"] = "SMART\nTOOL"
-    ws["A1"].font = Font(bold=True, size=24, color="6B7280")
-    ws["A1"].alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    logo_path = Path(__file__).resolve().parents[1] / "assets" / "smart-tool-logo.png"
+    if logo_path.exists():
+        logo = ExcelImage(str(logo_path))
+        logo.width = 150
+        logo.height = 72
+        ws.add_image(logo, "A1")
+    else:
+        ws["A1"] = "SMART\nTOOL"
+        ws["A1"].font = Font(bold=True, size=24, color="6B7280")
+        ws["A1"].alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
     ws.merge_cells("C1:H1")
     ws["C1"] = "INSPECCION FINAL DE PRODUCTO"
