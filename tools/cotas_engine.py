@@ -671,25 +671,29 @@ def build_ocr_variants(source: Path, output_dir: Path) -> list[tuple[Path, tuple
 
 def run_windows_ocr(image_path: Path) -> list[dict[str, Any]]:
     script = Path(__file__).with_name("windows_ocr.ps1")
-    if not script.exists():
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not script.exists() or not powershell:
         return []
 
-    result = subprocess.run(
-        [
-            "powershell",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(script),
-            str(image_path),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=60,
-    )
+    try:
+        result = subprocess.run(
+            [
+                powershell,
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(script),
+                str(image_path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return []
     if result.returncode != 0 or not result.stdout.strip():
         return []
 
