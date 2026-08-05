@@ -91,30 +91,32 @@ def looks_like_dimension(
     text = normalize_text(raw_text)
     compact = re.sub(r"\s+", "", text)
 
-    if compact in {"99", "01", "0.0", "00"}:
-        return False, 0.0, "ignored ocr artifact"
-    if re.match(r"^[0-9]{3}$", compact) and compact not in {"110"}:
-        return False, 0.0, "ignored unlikely ocr integer"
-
     if not compact or NOT_DIMENSION_RE.match(compact):
         return False, 0.0, "ignored label"
 
     if not re.search(r"\d", compact):
         return False, 0.0, "no digits"
 
+    line_tokens = [token for token in re.split(r"\s+", line_text.strip()) if token]
+    context_text = normalize_text(" ".join(part for part in [line_text, neighbor_text] if part))
+    line_has_unit_nearby = bool(
+        re.search(r"(?i)\b(mm|cm|in|deg|grados|aprox|approx)\b|\"", context_text)
+    )
+
+    if compact in {"99", "01", "0.0", "00"}:
+        return False, 0.0, "ignored ocr artifact"
+    if re.match(r"^[0-9]{3}$", compact) and compact not in {"110"} and not line_has_unit_nearby:
+        return False, 0.0, "ignored unlikely ocr integer"
+
     has_strong_marker = bool(
         re.search(r"(?i)(^r|^m|x|\+/-|\u00b1|\+|-|/|mm|cm|in|deg|grados|\")", compact)
     )
-    if re.match(r"^[0-9]$", compact) and not has_strong_marker:
+    if re.match(r"^[0-9]$", compact) and not has_strong_marker and not line_has_unit_nearby:
         return False, 0.0, "ignored single digit"
 
     if line_text and NON_DIMENSION_LINE_RE.search(line_text) and not has_strong_marker:
         return False, 0.0, "ignored title block or note line"
 
-    line_tokens = [token for token in re.split(r"\s+", line_text.strip()) if token]
-    line_has_unit_nearby = bool(
-        re.search(r"(?i)\b(mm|cm|in|deg|grados)\b|\"", normalize_text(neighbor_text))
-    )
     is_plain_number = bool(re.match(r"^[0-9]+(?:[.,][0-9]+)?$", compact))
     if is_plain_number and len(line_tokens) > 12 and not line_has_unit_nearby:
         return False, 0.0, "plain number inside note"
@@ -134,7 +136,9 @@ def looks_like_dimension(
         return True, min(confidence, 0.96), reason
 
     if is_plain_number:
-        return True, 0.62, "plain numeric value"
+        confidence = 0.72 if line_has_unit_nearby else 0.62
+        reason = "plain numeric value with nearby unit" if line_has_unit_nearby else "plain numeric value"
+        return True, confidence, reason
 
     return False, 0.0, "not a dimension"
 
@@ -246,11 +250,13 @@ def extract_rotated_word_candidates(
     page_index: int,
     page_width: float,
     page_height: float,
+    table_bboxes: list[PdfBBox] | None = None,
 ) -> list[dict[str, Any]]:
+    table_bboxes = table_bboxes or []
     rotated_words = [
         word
         for word in words
-        if not bool(word.get("upright", True))
+        if not bool(word.get("upright", True)) and not word_inside_any_bbox(word, table_bboxes)
     ]
     rotated_words.sort(key=lambda item: (float(item.get("x0", 0)), float(item.get("top", 0))))
 
@@ -290,6 +296,28 @@ def extract_rotated_word_candidates(
                 phrase_text = f"{text} {reverse_rotated_text(str(rotated_words[best_value_index].get('text', ''))).strip()}"
                 consumed.add(best_value_index)
         else:
+            best_suffix_index: int | None = None
+            best_suffix_gap = 999.0
+            for other_index, other in enumerate(rotated_words):
+                if other_index == index or other_index in consumed:
+                    continue
+                if abs(float(other.get("x0", 0)) - float(word.get("x0", 0))) > 2.5:
+                    continue
+
+                other_text = reverse_rotated_text(str(other.get("text", ""))).strip()
+                if not is_suffix_dimension_token(other_text):
+                    continue
+
+                gap = abs(float(other.get("top", 0)) - float(word.get("bottom", 0)))
+                if gap < best_suffix_gap and gap <= 9:
+                    best_suffix_gap = gap
+                    best_suffix_index = other_index
+
+            if best_suffix_index is not None:
+                phrase_words.append(rotated_words[best_suffix_index])
+                phrase_text = f"{text} {reverse_rotated_text(str(rotated_words[best_suffix_index].get('text', ''))).strip()}"
+                consumed.add(best_suffix_index)
+
             best_prefix_index: int | None = None
             best_gap = 999.0
             for other_index, other in enumerate(rotated_words):
@@ -312,7 +340,7 @@ def extract_rotated_word_candidates(
                 phrase_text = f"{reverse_rotated_text(str(rotated_words[best_prefix_index].get('text', ''))).strip()} {text}"
                 consumed.add(best_prefix_index)
 
-        ok, confidence, reason = looks_like_dimension(phrase_text)
+        ok, confidence, reason = looks_like_dimension(phrase_text, phrase_text, phrase_text)
         if not ok:
             continue
 
@@ -354,6 +382,13 @@ def is_suffix_dimension_token(text: str) -> bool:
             "SIDE",
             "WALL",
             "TYP",
+            "MM",
+            "CM",
+            "IN",
+            "APROX",
+            "APROX.",
+            "APPROX",
+            "APPROX.",
             "EQ",
             "SP",
             "PLCS",
@@ -783,6 +818,7 @@ def extract_candidates(pdf_path: Path, include_tables: bool = False) -> list[Dim
                     page_index,
                     float(page.width),
                     float(page.height),
+                    table_bboxes,
                 )
             )
             words = [
