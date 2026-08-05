@@ -1474,43 +1474,70 @@ def generate_tolerance_workbook(
     job: dict[str, Any] | None = None,
 ) -> None:
     from openpyxl import Workbook
-    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
 
     output_xlsx.parent.mkdir(parents=True, exist_ok=True)
     wb = Workbook()
     ws = wb.active
-    ws.title = "Tolerancias"
-
-    title = "Reporte de tolerancias por cota"
-    ws["A1"] = title
-    ws["A1"].font = Font(bold=True, size=14)
-    ws.merge_cells("A1:F1")
+    ws.title = "Inspeccion Final"
 
     metadata = job or {}
-    ws["A2"] = "Cliente"
-    ws["B2"] = metadata.get("client", "")
-    ws["C2"] = "Plano"
-    ws["D2"] = metadata.get("drawing_number", "")
-    ws["E2"] = "Parte"
-    ws["F2"] = metadata.get("part_number", "")
-    ws["G2"] = "Revision"
-    ws["H2"] = metadata.get("revision", "")
+    dark_fill = PatternFill("solid", fgColor="111827")
+    thin = Side(style="thin", color="000000")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    ws.merge_cells("A1:B5")
+    ws["A1"] = "SMART\nTOOL"
+    ws["A1"].font = Font(bold=True, size=24, color="6B7280")
+    ws["A1"].alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    ws.merge_cells("C1:H1")
+    ws["C1"] = "INSPECCION FINAL DE PRODUCTO"
+    ws["C1"].font = Font(bold=True, size=16, name="Times New Roman")
+    ws["C1"].alignment = Alignment(horizontal="center")
+    ws.merge_cells("I1:M1")
+    ws["I1"] = "SR-P-19-02 Rev 04 Emision: 30/07/25"
+    ws["I1"].alignment = Alignment(horizontal="center")
+
+    form_cells = [
+        ("C3", "Cliente:"), ("D3", metadata.get("client", "")),
+        ("I3", "#F:"), ("J3", ""),
+        ("L3", "PO#"), ("M3", ""),
+        ("C5", "No. Parte:"), ("D5", metadata.get("part_number") or metadata.get("drawing_number", "")),
+        ("I5", "Rev:"), ("J5", metadata.get("revision", "")),
+    ]
+    for cell_ref, value in form_cells:
+        ws[cell_ref] = value
+        ws[cell_ref].font = Font(bold=cell_ref[0] in {"C", "I", "L"})
+    for merged in ["D3:H3", "J3:K3", "M3:M3", "D5:H5", "J5:K5"]:
+        ws.merge_cells(merged)
+    for row in [3, 5]:
+        for col in range(4, 14):
+            ws.cell(row=row, column=col).border = Border(bottom=thin)
 
     headers = [
-        "#",
-        "Texto cota",
-        "Nominal",
-        "Decimales",
+        "ITEM",
+        "NOMINAL",
+        "INSTRUMENT",
+        "Decimal",
         "Tol +",
         "Tol -",
+        "PIEZA 1",
+        "PIEZA 2",
+        "PIEZA 3",
+        "PIEZA 4",
+        "PIEZA 5",
+        "PIEZA 6",
+        "PIEZA 7",
     ]
-    header_row = 4
+    header_row = 7
     for col, header in enumerate(headers, start=1):
         cell = ws.cell(row=header_row, column=col, value=header)
         cell.font = Font(bold=True, color="FFFFFF")
-        cell.fill = PatternFill("solid", fgColor="1F2937")
+        cell.fill = dark_fill
         cell.alignment = Alignment(horizontal="center")
+        cell.border = border
 
     tolerance_candidates = [
         candidate
@@ -1522,23 +1549,35 @@ def generate_tolerance_workbook(
         values = [
             candidate.number,
             candidate.text,
-            info["nominal"],
+            "",
             info["decimals"],
             info["tol_plus"],
             info["tol_minus"],
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
         ]
         for col, value in enumerate(values, start=1):
             cell = ws.cell(row=row, column=col, value=value)
-            if col in {3, 5, 6} and value is not None:
+            cell.border = border
+            if col in {5, 6} and value is not None:
                 cell.number_format = "0.0000"
-            if col in {1, 4}:
+            if col in {1, 4, 5, 6} or col >= 7:
                 cell.alignment = Alignment(horizontal="center")
+            if col == 2:
+                cell.alignment = Alignment(horizontal="left")
 
-    widths = [8, 36, 12, 10, 12, 12]
+    widths = [8, 16, 16, 10, 12, 12, 14, 14, 14, 14, 14, 14, 14]
     for index, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(index)].width = width
-    ws.freeze_panes = "A5"
-    ws.auto_filter.ref = f"A{header_row}:F{max(header_row + 1, header_row + len(tolerance_candidates))}"
+    for row in range(header_row + 1, header_row + len(tolerance_candidates) + 1):
+        ws.row_dimensions[row].height = 20
+    ws.freeze_panes = "A8"
+    ws.auto_filter.ref = f"A{header_row}:M{max(header_row + 1, header_row + len(tolerance_candidates))}"
 
     rules = wb.create_sheet("Reglas")
     rules["A1"] = "Reglas de tolerancia general"
