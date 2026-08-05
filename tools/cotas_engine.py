@@ -448,7 +448,14 @@ def dedupe_candidates(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         ax1, ay1 = a["x"] + a["width"], a["y"] + a["height"]
         bx0, by0 = b["x"], b["y"]
         bx1, by1 = b["x"] + b["width"], b["y"] + b["height"]
-        return ax0 <= bx1 and ax1 >= bx0 and ay0 <= by1 and ay1 >= by0
+        return ax0 <= bx1 + 1.5 and ax1 + 1.5 >= bx0 and ay0 <= by1 + 1.5 and ay1 + 1.5 >= by0
+
+    def center_distance(a: dict[str, Any], b: dict[str, Any]) -> float:
+        ax = a["x"] + a["width"] / 2
+        ay = a["y"] + a["height"] / 2
+        bx = b["x"] + b["width"] / 2
+        by = b["y"] + b["height"] / 2
+        return ((ax - bx) ** 2 + (ay - by) ** 2) ** 0.5
 
     unique: list[dict[str, Any]] = []
     for item in items:
@@ -458,14 +465,8 @@ def dedupe_candidates(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 continue
 
             same_text = normalize_text(item["text"]).lower() == normalize_text(existing["text"]).lower()
-            near_x = abs(item["x"] - existing["x"]) <= 3
-            near_y = abs(item["y"] - existing["y"]) <= 3
-            close_x = abs(item["x"] - existing["x"]) <= 8
-            close_y = abs(item["y"] - existing["y"]) <= 8
-            item_center = item["x"] + item["width"] / 2
-            existing_center = existing["x"] + existing["width"] / 2
-            overlaps = abs(item_center - existing_center) <= 6
-            if same_text and (boxes_overlap(item, existing) or (near_y and (near_x or overlaps)) or (close_x and close_y)):
+            same_physical_text = boxes_overlap(item, existing) or center_distance(item, existing) <= 4
+            if same_text and same_physical_text:
                 duplicate = True
                 break
 
