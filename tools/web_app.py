@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import html
+import hmac
+import hashlib
 import json
+import os
 import shutil
 import sys
 import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 
 from cotas_engine import DimensionCandidate, analyze_command, build_parser, draw_numbered_overlay, init_history
 
@@ -17,7 +20,11 @@ ROOT = Path(__file__).resolve().parents[1]
 STORAGE = ROOT / "storage"
 UPLOADS = STORAGE / "uploads"
 CLIENTS_FILE = ROOT / "data" / "clients.json"
-ENGINE_VERSION = "2026-08-01-admin-home"
+ENGINE_VERSION = "2026-08-05-login"
+AUTH_USER = os.getenv("COTAS_ADMIN_USER", "admin")
+AUTH_PASSWORD = os.getenv("COTAS_ADMIN_PASSWORD", "")
+AUTH_SECRET = os.getenv("COTAS_SECRET_KEY", "")
+COOKIE_NAME = "cotas_session"
 
 
 def esc(value: object) -> str:
@@ -63,7 +70,30 @@ def display_client(value: object) -> str:
     return client.upper() if client else "Sin cliente"
 
 
-def layout(title: str, body: str) -> bytes:
+def auth_configured() -> bool:
+    return bool(AUTH_USER and AUTH_PASSWORD and AUTH_SECRET)
+
+
+def sign_session(username: str) -> str:
+    signature = hmac.new(AUTH_SECRET.encode("utf-8"), username.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{username}:{signature}"
+
+
+def valid_session(value: str) -> bool:
+    if not auth_configured() or ":" not in value:
+        return False
+    username, signature = value.split(":", 1)
+    expected = sign_session(username).split(":", 1)[1]
+    return hmac.compare_digest(username, AUTH_USER) and hmac.compare_digest(signature, expected)
+
+
+def layout(title: str, body: str, authenticated: bool = True) -> bytes:
+    nav = """
+      <a href="/new">Nuevo plano</a>
+      <a href="/history">Historial</a>
+      <a href="/admin">Admin</a>
+      <a href="/logout">Salir</a>
+""" if authenticated else ""
     return f"""<!doctype html>
 <html lang="es">
 <head>
@@ -139,9 +169,7 @@ def layout(title: str, body: str) -> bytes:
   <header>
     <div><h1>Planos Cotas</h1><div class="version">Motor {esc(ENGINE_VERSION)}</div></div>
     <nav>
-      <a href="/new">Nuevo plano</a>
-      <a href="/history">Historial</a>
-      <a href="/admin">Admin</a>
+{nav}
     </nav>
   </header>
   <main>{body}</main>
@@ -215,8 +243,8 @@ def run_engine(input_pdf: Path, fields: dict[str, str]) -> dict:
 class App(BaseHTTPRequestHandler):
     server_version = f"PlanosCotas/{ENGINE_VERSION}"
 
-    def send_html(self, title: str, body: str, status: int = 200) -> None:
-        payload = layout(title, body)
+    def send_html(self, title: str, body: str, status: int = 200, authenticated: bool = True) -> None:
+        payload = layout(title, body, authenticated=authenticated)
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
@@ -231,6 +259,41 @@ class App(BaseHTTPRequestHandler):
         self.send_header("Location", location)
         self.end_headers()
 
+    def read_cookie(self, name: str) -> str:
+        header = self.headers.get("Cookie", "")
+        for part in header.split(";"):
+            if "=" not in part:
+                continue
+            key, value = part.strip().split("=", 1)
+            if key == name:
+                return value
+        return ""
+
+    def is_authenticated(self) -> bool:
+        return valid_session(self.read_cookie(COOKIE_NAME))
+
+    def require_auth(self, parsed_path: str) -> bool:
+        if parsed_path in {"/login", "/version"}:
+            return True
+        if self.is_authenticated():
+            return True
+        target = quote(self.path, safe="")
+        self.redirect(f"/login?next={target}")
+        return False
+
+    def set_session_cookie(self, value: str) -> None:
+        secure = " Secure;" if self.headers.get("X-Forwarded-Proto") == "https" else ""
+        self.send_header(
+            "Set-Cookie",
+            f"{COOKIE_NAME}={value}; Path=/; HttpOnly;{secure} SameSite=Lax; Max-Age=28800",
+        )
+
+    def clear_session_cookie(self) -> None:
+        self.send_header(
+            "Set-Cookie",
+            f"{COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0",
+        )
+
     def send_json(self, payload: dict, status: int = 200) -> None:
         data = json.dumps(payload, indent=2).encode("utf-8")
         self.send_response(status)
@@ -244,7 +307,13 @@ class App(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path == "/":
+        if not self.require_auth(parsed.path):
+            return
+        if parsed.path == "/login":
+            self.show_login(parsed.query)
+        elif parsed.path == "/logout":
+            self.handle_logout()
+        elif parsed.path == "/":
             self.redirect("/admin")
         elif parsed.path == "/new":
             self.show_home()
@@ -271,7 +340,11 @@ class App(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path == "/upload":
+        if not self.require_auth(parsed.path):
+            return
+        if parsed.path == "/login":
+            self.handle_login()
+        elif parsed.path == "/upload":
             self.handle_upload()
         elif parsed.path.startswith("/edit/"):
             self.handle_edit(unquote(parsed.path.removeprefix("/edit/")))
@@ -279,6 +352,55 @@ class App(BaseHTTPRequestHandler):
             self.handle_delete(unquote(parsed.path.removeprefix("/delete/")))
         else:
             self.send_html("No encontrado", "<section><h2>No encontrado</h2></section>", 404)
+
+    def show_login(self, query: str = "", error: str = "") -> None:
+        params = parse_qs(query)
+        next_url = params.get("next", ["/admin"])[0] or "/admin"
+        if not next_url.startswith("/"):
+            next_url = "/admin"
+        message = f'<p class="muted">{esc(error)}</p>' if error else ""
+        if not auth_configured():
+            message = '<p class="muted">Login no configurado. Defina COTAS_ADMIN_USER, COTAS_ADMIN_PASSWORD y COTAS_SECRET_KEY en el servidor.</p>'
+        disabled = "disabled" if not auth_configured() else ""
+        body = f"""
+<form method="post" action="/login">
+  <h2>Acceso al sistema</h2>
+  {message}
+  <input type="hidden" name="next" value="{esc(next_url)}">
+  <div class="grid">
+    <div class="wide"><label>Usuario</label><input name="username" autocomplete="username" required {disabled}></div>
+    <div class="wide"><label>Contrasena</label><input type="password" name="password" autocomplete="current-password" required {disabled}></div>
+  </div>
+  <div class="actions"><button type="submit" {disabled}>Entrar</button></div>
+</form>
+"""
+        self.send_html("Login", body, authenticated=False)
+
+    def handle_login(self) -> None:
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        raw = self.rfile.read(length).decode("utf-8", errors="replace")
+        form = parse_qs(raw)
+        username = form.get("username", [""])[0]
+        password = form.get("password", [""])[0]
+        next_url = form.get("next", ["/admin"])[0] or "/admin"
+        if not next_url.startswith("/"):
+            next_url = "/admin"
+        if not auth_configured():
+            self.show_login(urlencode({"next": next_url}), "Login no configurado en el servidor.")
+            return
+        if not (hmac.compare_digest(username, AUTH_USER) and hmac.compare_digest(password, AUTH_PASSWORD)):
+            self.show_login(urlencode({"next": next_url}), "Usuario o contrasena incorrectos.")
+            return
+        self.send_response(HTTPStatus.SEE_OTHER)
+        self.set_session_cookie(sign_session(username))
+        self.send_header("Location", next_url)
+        self.end_headers()
+
+    def handle_logout(self) -> None:
+        self.send_response(HTTPStatus.SEE_OTHER)
+        self.clear_session_cookie()
+        self.send_header("Location", "/login")
+        self.end_headers()
 
     def show_home(self) -> None:
         clients_json = json.dumps(load_clients())

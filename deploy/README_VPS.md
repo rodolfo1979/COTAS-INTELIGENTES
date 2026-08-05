@@ -44,6 +44,12 @@ curl http://127.0.0.1:8088/version
 ## 5. Servicio systemd
 
 ```bash
+sudo tee /etc/cotas-inteligentes.env >/dev/null <<'EOF'
+COTAS_ADMIN_USER=admin
+COTAS_ADMIN_PASSWORD=cambie-esta-clave
+COTAS_SECRET_KEY=cambie-este-secreto-largo
+EOF
+sudo chmod 600 /etc/cotas-inteligentes.env
 sudo cp deploy/cotas-inteligentes.service /etc/systemd/system/cotas-inteligentes.service
 sudo chown -R www-data:www-data /var/www/cotas-inteligentes
 sudo systemctl daemon-reload
