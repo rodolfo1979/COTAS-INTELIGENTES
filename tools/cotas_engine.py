@@ -1185,7 +1185,7 @@ def choose_label_position(
         candidate.x + candidate.width + 3,
         candidate.y + candidate.height + 3,
     )
-    rings = [22, 32, 44, 58, 74, 92, 116]
+    rings = [18, 26, 36, 48, 62, 78, 96]
     directions = [
         (1.0, -0.8),
         (-1.0, -0.8),
@@ -1214,7 +1214,7 @@ def choose_label_position(
     # dimension value, either to its left or right.
     is_rotated_dimension = "rotated" in candidate.reason
     min_horizontal_gap = 42 if is_rotated_dimension else 24
-    for gap in [20, 30, 42, 58, 76, 96, 118]:
+    for gap in [16, 24, 34, 46, 60, 78, 96]:
         if gap < min_horizontal_gap:
             continue
         candidate_points.append((candidate.x - gap, center_top_y, gap, "horizontal"))
@@ -1233,20 +1233,6 @@ def choose_label_position(
             dx = ring * dir_x / length
             dy = ring * dir_y / length
             candidate_points.append((center_x + dx, center_top_y + dy, abs(dx) + abs(dy), "local"))
-
-    rails = [
-        (center_x, page_height * 0.18),
-        (center_x, page_height * 0.82),
-        (center_x, page_height * 0.28),
-        (center_x, page_height * 0.72),
-        (page_width * 0.18, center_top_y),
-        (page_width * 0.82, center_top_y),
-        (page_width * 0.28, center_top_y),
-        (page_width * 0.72, center_top_y),
-    ]
-    for x, top_y in rails:
-        distance = abs(x - center_x) + abs(top_y - center_top_y)
-        candidate_points.append((x, top_y, distance + 35, "rail"))
 
     for raw_x, raw_top_y, distance, placement_mode in candidate_points:
             x = clamp(raw_x, label_half_width + 4, page_width - label_half_width - 4)
@@ -1299,13 +1285,13 @@ def choose_label_position(
                 edge_bonus = -120
             min_leader = 30 if is_rotated_dimension else 18
             short_leader_penalty = (min_leader - leader_length) * 900 if leader_length < min_leader else 0
-            soft_max_leader = 82 if placement_mode == "horizontal" else 96
-            hard_max_leader = 135 if placement_mode == "horizontal" else 150
+            soft_max_leader = 58 if placement_mode == "horizontal" else 70
+            hard_max_leader = 88 if placement_mode == "horizontal" else 105
             long_leader_penalty = 0
             if leader_length > soft_max_leader:
-                long_leader_penalty += (leader_length - soft_max_leader) * 220
+                long_leader_penalty += (leader_length - soft_max_leader) * 1200
             if leader_length > hard_max_leader:
-                long_leader_penalty += (leader_length - hard_max_leader) * 900
+                long_leader_penalty += 200000 + (leader_length - hard_max_leader) * 3500
             horizontal = placement_mode == "horizontal" and abs(top_y - center_top_y) <= 2.5
             clean_horizontal = (
                 horizontal
@@ -1319,13 +1305,13 @@ def choose_label_position(
             )
             horizontal_bonus = 0
             if clean_horizontal:
-                horizontal_bonus = -26000
+                horizontal_bonus = -8500
                 if is_rotated_dimension:
-                    horizontal_bonus -= 3500
+                    horizontal_bonus -= 1500
             elif horizontal and text_hits == 0 and label_hits == 0 and leader_text_hits == 0:
-                horizontal_bonus = -2500
+                horizontal_bonus = -1200
 
-            distance_weight = 2 if placement_mode == "horizontal" else 4
+            distance_weight = 7 if placement_mode == "horizontal" else 6
 
             score = (
                 text_hits * 25000
