@@ -262,6 +262,20 @@ def extract_rotated_word_candidates(
 
     candidates: list[dict[str, Any]] = []
     consumed: set[int] = set()
+
+    def same_rotated_column(a: dict[str, Any], b: dict[str, Any], tolerance: float = 12.0) -> bool:
+        ax = (float(a.get("x0", 0)) + float(a.get("x1", 0))) / 2
+        bx = (float(b.get("x0", 0)) + float(b.get("x1", 0))) / 2
+        return abs(ax - bx) <= tolerance
+
+    def rotated_word_gap(a: dict[str, Any], b: dict[str, Any]) -> float:
+        return min(
+            abs(float(a.get("top", 0)) - float(b.get("bottom", 0))),
+            abs(float(b.get("top", 0)) - float(a.get("bottom", 0))),
+            abs(float(a.get("top", 0)) - float(b.get("top", 0))),
+            abs(float(a.get("bottom", 0)) - float(b.get("bottom", 0))),
+        )
+
     for index, word in enumerate(rotated_words):
         if index in consumed:
             continue
@@ -278,7 +292,7 @@ def extract_rotated_word_candidates(
             for other_index, other in enumerate(rotated_words):
                 if other_index == index or other_index in consumed:
                     continue
-                if abs(float(other.get("x0", 0)) - float(word.get("x0", 0))) > 2.5:
+                if not same_rotated_column(other, word):
                     continue
 
                 other_text = reverse_rotated_text(str(other.get("text", ""))).strip()
@@ -286,8 +300,8 @@ def extract_rotated_word_candidates(
                 if not ok:
                     continue
 
-                gap = abs(float(word.get("top", 0)) - float(other.get("bottom", 0)))
-                if gap < best_gap and gap <= 8:
+                gap = rotated_word_gap(word, other)
+                if gap < best_gap and gap <= 18:
                     best_gap = gap
                     best_value_index = other_index
 
@@ -301,15 +315,15 @@ def extract_rotated_word_candidates(
             for other_index, other in enumerate(rotated_words):
                 if other_index == index or other_index in consumed:
                     continue
-                if abs(float(other.get("x0", 0)) - float(word.get("x0", 0))) > 2.5:
+                if not same_rotated_column(other, word):
                     continue
 
                 other_text = reverse_rotated_text(str(other.get("text", ""))).strip()
                 if not is_suffix_dimension_token(other_text):
                     continue
 
-                gap = abs(float(other.get("top", 0)) - float(word.get("bottom", 0)))
-                if gap < best_suffix_gap and gap <= 9:
+                gap = rotated_word_gap(word, other)
+                if gap < best_suffix_gap and gap <= 24:
                     best_suffix_gap = gap
                     best_suffix_index = other_index
 
@@ -323,15 +337,15 @@ def extract_rotated_word_candidates(
             for other_index, other in enumerate(rotated_words):
                 if other_index == index or other_index in consumed:
                     continue
-                if abs(float(other.get("x0", 0)) - float(word.get("x0", 0))) > 2.5:
+                if not same_rotated_column(other, word):
                     continue
 
                 other_text = reverse_rotated_text(str(other.get("text", ""))).strip()
                 if not is_prefix_dimension_token(other_text):
                     continue
 
-                gap = abs(float(other.get("top", 0)) - float(word.get("bottom", 0)))
-                if gap < best_gap and gap <= 8:
+                gap = rotated_word_gap(word, other)
+                if gap < best_gap and gap <= 18:
                     best_gap = gap
                     best_prefix_index = other_index
 
