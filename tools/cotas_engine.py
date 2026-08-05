@@ -117,7 +117,13 @@ def tolerance_by_decimals(decimal_places: int) -> float | None:
 
 def is_thread_callout(text: str) -> bool:
     clean = normalize_text(text).upper()
-    return bool(re.search(r"\b\d+\s*-\s*\d+\b", clean) and re.search(r"\b(?:UNC|UNF|UNEF|THREAD|THD)\b", clean))
+    return bool(
+        (
+            re.search(r"\b\d+\s*-\s*\d+\b", clean)
+            and re.search(r"\b(?:UNC|UNF|UNEF|THREAD|THD)\b", clean)
+        )
+        or re.search(r"\bM\d+(?:\.\d+)?\s*X\s*\d+(?:\.\d+)?(?:\s*-\s*\d+[A-Z])?", clean)
+    )
 
 
 def tolerance_info(text: str) -> dict[str, Any]:
@@ -243,6 +249,9 @@ def looks_like_dimension(
         confidence = 0.72 if line_has_unit_nearby else 0.62
         reason = "plain numeric value with nearby unit" if line_has_unit_nearby else "plain numeric value"
         return True, confidence, reason
+
+    if is_thread_callout(text):
+        return True, 0.9, "thread callout"
 
     return False, 0.0, "not a dimension"
 
@@ -495,6 +504,12 @@ def is_suffix_dimension_token(text: str) -> bool:
             "ALL",
             "UNC",
             "UNF",
+            "UNEF",
+            "THREAD",
+            "THD",
+            "MINOR",
+            "MAJOR",
+            "DIAMETER",
             "NEAR",
             "FAR",
             "SIDE",
@@ -517,6 +532,7 @@ def is_suffix_dimension_token(text: str) -> bool:
             "-",
         }
         or re.match(r"^\([0-9]+\)$", compact)
+        or re.match(r"^[0-9]+[A-Z]$", compact)
     )
 
 
