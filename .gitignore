@@ -12,6 +12,7 @@ storage/history.sqlite
 storage/**/*.pdf
 storage/**/*.png
 storage/**/*.json
+storage/**/*.xlsx
 storage/test*_images/
 
 data/clients.json

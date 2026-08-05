@@ -2,3 +2,4 @@ pdfplumber
 pypdf
 reportlab
 pillow
+openpyxl

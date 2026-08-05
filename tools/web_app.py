@@ -13,14 +13,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 
-from cotas_engine import DimensionCandidate, analyze_command, build_parser, draw_numbered_overlay, init_history
+from cotas_engine import DimensionCandidate, analyze_command, build_parser, draw_numbered_overlay, generate_tolerance_workbook, init_history
 
 
 ROOT = Path(__file__).resolve().parents[1]
 STORAGE = ROOT / "storage"
 UPLOADS = STORAGE / "uploads"
 CLIENTS_FILE = ROOT / "data" / "clients.json"
-ENGINE_VERSION = "2026-08-05-shorter-leaders"
+ENGINE_VERSION = "2026-08-05-tolerance-xlsx"
 AUTH_USER = os.getenv("COTAS_ADMIN_USER", "admin")
 AUTH_PASSWORD = os.getenv("COTAS_ADMIN_PASSWORD", "")
 AUTH_SECRET = os.getenv("COTAS_SECRET_KEY", "")
@@ -651,6 +651,12 @@ class App(BaseHTTPRequestHandler):
             return
         job = dict(row)
         candidates = json.loads(Path(job["candidates_json"]).read_text(encoding="utf-8"))
+        tolerances_xlsx = Path(job["numbered_pdf"]).with_name("tolerancias.xlsx")
+        tolerance_button = (
+            f'<a class="button secondary" href="/file/{quote(str(tolerances_xlsx))}">Descargar Excel tolerancias</a>'
+            if tolerances_xlsx.exists()
+            else ""
+        )
         candidate_rows = "".join(
             f"<tr><td>{esc(c['number'])}</td><td>{esc(c['page'])}</td><td>{esc(c['text'])}</td><td>{esc(c['confidence'])}</td><td>{esc(c['reason'])}</td></tr>"
             for c in candidates
@@ -661,6 +667,7 @@ class App(BaseHTTPRequestHandler):
   <p class="ok">{len(candidates)} cotas propuestas</p>
   <div class="actions">
     <a class="button" href="/file/{quote(job['numbered_pdf'])}">Descargar PDF numerado</a>
+    {tolerance_button}
     <a class="button secondary" href="/edit/{quote(job['id'])}">Revisar cotas</a>
     <a class="button secondary" href="/view/{quote(job['id'])}/original">Ver original</a>
     <a class="button secondary" href="/view/{quote(job['id'])}/json">Ver JSON</a>
@@ -690,6 +697,7 @@ class App(BaseHTTPRequestHandler):
             "original": ("Plano original", job["original_pdf"]),
             "numbered": ("PDF numerado", job["numbered_pdf"]),
             "json": ("Cotas detectadas JSON", job["candidates_json"]),
+            "tolerances": ("Excel de tolerancias", str(Path(job["numbered_pdf"]).with_name("tolerancias.xlsx"))),
         }
         if kind not in files:
             self.send_html("No encontrado", "<section><h2>Archivo no encontrado</h2></section>", 404)
@@ -784,6 +792,7 @@ class App(BaseHTTPRequestHandler):
             encoding="utf-8",
         )
         draw_numbered_overlay(Path(job["original_pdf"]), candidates, Path(job["numbered_pdf"]))
+        generate_tolerance_workbook(candidates, Path(job["numbered_pdf"]).with_name("tolerancias.xlsx"), job)
         self.redirect(f"/job/{quote(job_id)}")
 
     def find_job(self, job_id: str) -> dict | None:
@@ -884,7 +893,12 @@ class App(BaseHTTPRequestHandler):
         if not path.exists() or not path.is_file():
             self.send_html("No encontrado", "<section><h2>Archivo no encontrado</h2></section>", 404)
             return
-        content_type = "application/pdf" if path.suffix.lower() == ".pdf" else "application/json"
+        content_types = {
+            ".pdf": "application/pdf",
+            ".json": "application/json",
+            ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        }
+        content_type = content_types.get(path.suffix.lower(), "application/octet-stream")
         payload = path.read_bytes()
         self.send_response(200)
         self.send_header("Content-Type", content_type)

@@ -82,6 +82,104 @@ def normalize_text(text: str) -> str:
     )
 
 
+def parse_decimal_number(raw_value: str) -> float | None:
+    value = normalize_text(raw_value).strip()
+    if not value:
+        return None
+    if value.startswith("."):
+        value = f"0{value}"
+    if value.startswith("-."):
+        value = value.replace("-.", "-0.", 1)
+    if value.startswith("+."):
+        value = value.replace("+.", "+0.", 1)
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+def decimal_places_from_token(token: str) -> int:
+    clean = normalize_text(token).strip()
+    if "." not in clean:
+        return 0
+    return len(re.sub(r"[^0-9]", "", clean.split(".", 1)[1]))
+
+
+def tolerance_by_decimals(decimal_places: int) -> float | None:
+    if decimal_places == 2:
+        return 0.01
+    if decimal_places == 3:
+        return 0.005
+    if decimal_places >= 4:
+        return 0.001
+    return None
+
+
+def tolerance_info(text: str) -> dict[str, Any]:
+    clean = normalize_text(text)
+    unit_match = re.search(r"(?i)\b(mm|cm|in|deg|grados)\b|\"", clean)
+    unit = unit_match.group(0).replace('"', "in").lower() if unit_match else ""
+
+    explicit_plus: float | None = None
+    explicit_minus: float | None = None
+    plus_minus = re.search(r"(?:\+/-|±)\s*([+-]?(?:\d+(?:\.\d+)?|\.\d+))", clean)
+    if plus_minus:
+        explicit = parse_decimal_number(plus_minus.group(1))
+        if explicit is not None:
+            explicit_plus = abs(explicit)
+            explicit_minus = -abs(explicit)
+    else:
+        explicit_pairs = re.findall(r"([+-])\s*((?:\d+(?:\.\d+)?|\.\d+))", clean)
+        for sign, value_text in explicit_pairs:
+            value = parse_decimal_number(value_text)
+            if value is None:
+                continue
+            if sign == "+" and explicit_plus is None:
+                explicit_plus = abs(value)
+            elif sign == "-" and explicit_minus is None:
+                explicit_minus = -abs(value)
+
+    value_tokens = re.findall(r"(?<![A-Za-z])(?:\d+\.\d+|\.\d+|\d+)(?![A-Za-z])", clean)
+    nominal_token = ""
+    nominal: float | None = None
+    for token in value_tokens:
+        previous = clean[max(0, clean.find(token) - 2) : clean.find(token)]
+        if "+" in previous or "-" in previous or "+/-" in previous:
+            continue
+        nominal = parse_decimal_number(token)
+        nominal_token = token
+        if nominal is not None:
+            break
+
+    decimals = decimal_places_from_token(nominal_token) if nominal_token else 0
+    source = ""
+    tol_plus = explicit_plus
+    tol_minus = explicit_minus
+    if tol_plus is not None or tol_minus is not None:
+        source = "explicita en cota"
+        tol_plus = tol_plus if tol_plus is not None else 0.0
+        tol_minus = tol_minus if tol_minus is not None else 0.0
+    else:
+        general = tolerance_by_decimals(decimals)
+        if general is not None:
+            tol_plus = general
+            tol_minus = -general
+            source = f"general {decimals} decimales"
+
+    minimum = nominal + tol_minus if nominal is not None and tol_minus is not None else None
+    maximum = nominal + tol_plus if nominal is not None and tol_plus is not None else None
+    return {
+        "nominal": nominal,
+        "unit": unit,
+        "decimals": decimals,
+        "tol_plus": tol_plus,
+        "tol_minus": tol_minus,
+        "minimum": minimum,
+        "maximum": maximum,
+        "source": source or "sin tolerancia asignada",
+    }
+
+
 def looks_like_dimension(
     raw_text: str,
     line_text: str = "",
@@ -1353,6 +1451,99 @@ def load_candidates(path: Path) -> list[DimensionCandidate]:
     return candidates
 
 
+def generate_tolerance_workbook(
+    candidates: list[DimensionCandidate],
+    output_xlsx: Path,
+    job: dict[str, Any] | None = None,
+) -> None:
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    output_xlsx.parent.mkdir(parents=True, exist_ok=True)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Tolerancias"
+
+    title = "Reporte de tolerancias por cota"
+    ws["A1"] = title
+    ws["A1"].font = Font(bold=True, size=14)
+    ws.merge_cells("A1:L1")
+
+    metadata = job or {}
+    ws["A2"] = "Cliente"
+    ws["B2"] = metadata.get("client", "")
+    ws["C2"] = "Plano"
+    ws["D2"] = metadata.get("drawing_number", "")
+    ws["E2"] = "Parte"
+    ws["F2"] = metadata.get("part_number", "")
+    ws["G2"] = "Revision"
+    ws["H2"] = metadata.get("revision", "")
+
+    headers = [
+        "#",
+        "Pagina",
+        "Texto cota",
+        "Nominal",
+        "Unidad",
+        "Decimales",
+        "Tol +",
+        "Tol -",
+        "Limite min",
+        "Limite max",
+        "Fuente tolerancia",
+        "Motivo deteccion",
+    ]
+    header_row = 4
+    for col, header in enumerate(headers, start=1):
+        cell = ws.cell(row=header_row, column=col, value=header)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="1F2937")
+        cell.alignment = Alignment(horizontal="center")
+
+    for row, candidate in enumerate(sorted(candidates, key=lambda item: (item.page, item.number)), start=header_row + 1):
+        info = tolerance_info(candidate.text)
+        values = [
+            candidate.number,
+            candidate.page,
+            candidate.text,
+            info["nominal"],
+            info["unit"],
+            info["decimals"],
+            info["tol_plus"],
+            info["tol_minus"],
+            info["minimum"],
+            info["maximum"],
+            info["source"],
+            candidate.reason,
+        ]
+        for col, value in enumerate(values, start=1):
+            cell = ws.cell(row=row, column=col, value=value)
+            if col in {4, 7, 8, 9, 10} and value is not None:
+                cell.number_format = "0.0000"
+            if col in {1, 2, 6}:
+                cell.alignment = Alignment(horizontal="center")
+
+    widths = [8, 10, 34, 12, 10, 10, 12, 12, 14, 14, 24, 26]
+    for index, width in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(index)].width = width
+    ws.freeze_panes = "A5"
+    ws.auto_filter.ref = f"A{header_row}:L{max(header_row + 1, header_row + len(candidates))}"
+
+    rules = wb.create_sheet("Reglas")
+    rules["A1"] = "Reglas de tolerancia general"
+    rules["A1"].font = Font(bold=True, size=13)
+    rules.append(["Decimales", "Tolerancia"])
+    rules.append([2, 0.01])
+    rules.append([3, 0.005])
+    rules.append([4, 0.001])
+    rules.append(["Prioridad", "Si la cota trae tolerancia explicita, se usa esa tolerancia antes de la regla general."])
+    for col in range(1, 3):
+        rules.column_dimensions[get_column_letter(col)].width = 28
+
+    wb.save(output_xlsx)
+
+
 def init_history(db_path: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as conn:
@@ -1420,6 +1611,7 @@ def analyze_command(args: argparse.Namespace) -> None:
     original_pdf = job_dir / "original.pdf"
     candidates_json = job_dir / "candidates.json"
     numbered_pdf = job_dir / "numbered.pdf"
+    tolerances_xlsx = job_dir / "tolerancias.xlsx"
     job_json = job_dir / "job.json"
 
     shutil.copy2(input_pdf, original_pdf)
@@ -1446,9 +1638,11 @@ def analyze_command(args: argparse.Namespace) -> None:
         "original_pdf": str(original_pdf),
         "numbered_pdf": str(numbered_pdf),
         "candidates_json": str(candidates_json),
+        "tolerances_xlsx": str(tolerances_xlsx),
         "created_at": datetime.now(timezone.utc).isoformat(),
         "candidate_count": len(candidates),
     }
+    generate_tolerance_workbook(candidates, tolerances_xlsx, job)
     job_json.write_text(json.dumps(job, indent=2), encoding="utf-8")
 
     db_path = storage / "history.sqlite"
