@@ -1422,17 +1422,19 @@ def choose_label_position(
 
 def qr_payload(metadata: dict[str, Any] | None) -> str:
     data = metadata or {}
-    payload = {
-        "type": "cotas_inteligentes_plano",
-        "id": data.get("id", ""),
-        "client": data.get("client", ""),
-        "drawing_number": data.get("drawing_number", ""),
-        "part_number": data.get("part_number", ""),
-        "revision": data.get("revision", ""),
-        "order_number": data.get("order_number", ""),
-        "created_at": data.get("created_at", ""),
-    }
-    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    created_at = str(data.get("created_at", "") or "")
+    created_date = created_at[:10] if len(created_at) >= 10 else created_at
+    lines = [
+        "COTAS INTELIGENTES",
+        f"Cliente: {data.get('client', '')}",
+        f"Plano: {data.get('drawing_number', '')}",
+        f"Parte: {data.get('part_number', '')}",
+        f"Rev: {data.get('revision', '')}",
+        f"Orden: {data.get('order_number', '')}",
+        f"Fecha: {created_date}",
+        f"ID: {data.get('id', '')}",
+    ]
+    return "\n".join(line for line in lines if not line.endswith(": "))
 
 
 def choose_qr_position(
