@@ -1432,71 +1432,56 @@ def qr_payload(metadata: dict[str, Any] | None) -> str:
     return "\n".join(line for line in lines if not line.endswith(": "))
 
 
-def choose_qr_position(
-    page_width: float,
-    page_height: float,
-    qr_size: float,
-    text_boxes: list[PdfBBox],
-    graphic_boxes: list[PdfBBox],
-    label_boxes: list[PdfBBox],
-) -> tuple[float, float]:
-    margin = 18.0
-    options = [
-        (page_width - margin - qr_size, page_height - margin - qr_size),
-        (page_width - margin - qr_size, margin),
-        (page_width - margin - qr_size, page_height * 0.50 - qr_size / 2),
-        (margin, margin),
-        (margin, page_height - margin - qr_size),
-        (margin, page_height * 0.50 - qr_size / 2),
-    ]
-    best = options[0]
-    best_score = float("inf")
-    for x, y in options:
-        top_box = (x - 3, page_height - y - qr_size - 3, x + qr_size + 3, page_height - y + 3)
-        text_hits = sum(1 for box in text_boxes if boxes_intersect(top_box, box, padding=4.0))
-        graphic_hits = sum(1 for box in graphic_boxes if boxes_intersect(top_box, box, padding=3.0))
-        label_hits = sum(1 for box in label_boxes if boxes_intersect(top_box, box, padding=4.0))
-        top_penalty = 1200 if y > page_height * 0.72 else 0
-        left_penalty = 900 if x < page_width * 0.25 else 0
-        score = text_hits * 1000 + label_hits * 800 + graphic_hits * 260 + top_penalty + left_penalty
-        if score < best_score:
-            best_score = score
-            best = (x, y)
-    return best
-
-
-def draw_plan_qr(
-    c: canvas.Canvas,
+def draw_qr_back_page(
+    output_path: Path,
     metadata: dict[str, Any] | None,
     page_width: float,
     page_height: float,
-    text_boxes: list[PdfBBox],
-    graphic_boxes: list[PdfBBox],
-    label_boxes: list[PdfBBox],
 ) -> None:
     from reportlab.graphics import renderPDF
     from reportlab.graphics.barcode.qr import QrCodeWidget
     from reportlab.graphics.shapes import Drawing
 
-    qr_size = 72.0
-    x, y = choose_qr_position(page_width, page_height, qr_size, text_boxes, graphic_boxes, label_boxes)
+    c = canvas.Canvas(str(output_path), pagesize=(page_width, page_height))
+    qr_size = min(144.0, page_width * 0.24, page_height * 0.24)
+    x = (page_width - qr_size) / 2
+    y = page_height * 0.52
+
     c.setFillColor(white)
-    c.setStrokeColor(HexColor("#dc2626"))
-    c.setLineWidth(0.5)
-    c.rect(x - 4, y - 4, qr_size + 8, qr_size + 16, fill=1, stroke=1)
+    c.rect(0, 0, page_width, page_height, fill=1, stroke=0)
     qr = QrCodeWidget(qr_payload(metadata))
     bounds = qr.getBounds()
     qr_width = bounds[2] - bounds[0]
     qr_height = bounds[3] - bounds[1]
     drawing = Drawing(qr_size, qr_size, transform=[qr_size / qr_width, 0, 0, qr_size / qr_height, 0, 0])
     drawing.add(qr)
-    renderPDF.draw(drawing, c, x, y + 8)
+    renderPDF.draw(drawing, c, x, y)
+
+    data = metadata or {}
     drawing_number = str((metadata or {}).get("drawing_number", "") or "PLANO").strip()
-    c.setFont("Helvetica-Bold", 5.4)
+    c.setFont("Helvetica-Bold", 18)
+    c.setFillColor(HexColor("#111827"))
+    title = "COTAS INTELIGENTES"
+    c.drawCentredString(page_width / 2, y + qr_size + 36, title)
+    c.setFont("Helvetica-Bold", 12)
     c.setFillColor(HexColor("#dc2626"))
-    label = f"QR {drawing_number}"[:24]
-    label_width = c.stringWidth(label, "Helvetica-Bold", 5.4)
-    c.drawString(x + (qr_size - label_width) / 2, y + 1.2, label)
+    c.drawCentredString(page_width / 2, y - 24, f"QR PLANO {drawing_number}")
+
+    c.setFont("Helvetica", 10)
+    c.setFillColor(HexColor("#111827"))
+    details = [
+        f"Cliente: {data.get('client', '')}",
+        f"Plano: {data.get('drawing_number', '')}",
+        f"Parte: {data.get('part_number', '')}",
+        f"Rev: {data.get('revision', '')}",
+        f"Orden: {data.get('order_number', '')}",
+    ]
+    line_y = y - 46
+    for line in [item for item in details if not item.endswith(": ")]:
+        c.drawCentredString(page_width / 2, line_y, line)
+        line_y -= 14
+    c.showPage()
+    c.save()
 
 
 def draw_numbered_overlay(
@@ -1574,22 +1559,16 @@ def draw_numbered_overlay(
             label_edge_y = pdf_y + (vec_y / vec_len) * label_half_height
             c.line(line_start_x, line_start_y, label_edge_x, label_edge_y)
 
-        if page_index == 1:
-            draw_plan_qr(
-                c,
-                metadata,
-                width,
-                height,
-                occupied_by_page.get(page_index, []),
-                graphics_by_page.get(page_index, []),
-                placed_label_boxes,
-            )
-
         c.save()
 
         overlay_reader = PdfReader(str(overlay_path))
         page.merge_page(overlay_reader.pages[0])
         writer.add_page(page)
+        if page_index == 1 and metadata:
+            qr_back_path = tmp_dir / "qr_back_page.pdf"
+            draw_qr_back_page(qr_back_path, metadata, width, height)
+            qr_back_reader = PdfReader(str(qr_back_path))
+            writer.add_page(qr_back_reader.pages[0])
 
     with output_pdf.open("wb") as handle:
         writer.write(handle)
