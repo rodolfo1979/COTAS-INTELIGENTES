@@ -653,24 +653,29 @@ def visual_order_candidates(items: list[dict[str, Any]]) -> list[dict[str, Any]]
                 float(item["x"]) + float(item.get("width", 0)) / 2,
             ),
         )
-        bands: list[list[dict[str, Any]]] = []
-        band_tolerance = 18.0
+        bands: list[dict[str, Any]] = []
+        heights = sorted(float(item.get("height", 0)) for item in page_items if float(item.get("height", 0)) > 0)
+        median_height = heights[len(heights) // 2] if heights else 8.0
+        band_tolerance = max(46.0, median_height * 5.5)
         for item in page_items:
             center_y = float(item["y"]) + float(item.get("height", 0)) / 2
             if not bands:
-                bands.append([item])
+                bands.append({"items": [item], "min_y": center_y, "max_y": center_y})
                 continue
 
-            band_center = sum(float(entry["y"]) + float(entry.get("height", 0)) / 2 for entry in bands[-1]) / len(bands[-1])
-            if abs(center_y - band_center) <= band_tolerance:
-                bands[-1].append(item)
+            current_band = bands[-1]
+            if center_y - float(current_band["min_y"]) <= band_tolerance:
+                current_band["items"].append(item)
+                current_band["min_y"] = min(float(current_band["min_y"]), center_y)
+                current_band["max_y"] = max(float(current_band["max_y"]), center_y)
             else:
-                bands.append([item])
+                bands.append({"items": [item], "min_y": center_y, "max_y": center_y})
 
-        for band in bands:
+        for band in sorted(bands, key=lambda entry: float(entry["min_y"])):
+            band_items = list(band["items"])
             ordered.extend(
                 sorted(
-                    band,
+                    band_items,
                     key=lambda item: (
                         float(item["x"]) + float(item.get("width", 0)) / 2,
                         float(item["y"]) + float(item.get("height", 0)) / 2,
