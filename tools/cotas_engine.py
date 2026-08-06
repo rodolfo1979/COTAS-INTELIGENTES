@@ -551,7 +551,7 @@ def is_suffix_dimension_token(text: str) -> bool:
             "-",
         }
         or re.match(r"^\([0-9]+\)$", compact)
-        or re.match(r"^[0-9]+[A-Z]$", compact)
+        or re.match(r"^[0-9]+(?!X$)[A-Z]$", compact)
     )
 
 
@@ -1000,7 +1000,7 @@ def extract_ocr_candidates(pdf_path: Path) -> list[DimensionCandidate]:
     raw_candidates = remove_grouped_digit_artifacts(raw_candidates)
     raw_candidates = [item for item in raw_candidates if not is_date_like_text(str(item.get("text", "")))]
     raw_candidates = dedupe_candidates(raw_candidates)
-    raw_candidates = visual_order_candidates(raw_candidates)
+    raw_candidates.sort(key=lambda item: (item["page"], item["y"], item["x"]))
     return [
         DimensionCandidate(number=index, **item)
         for index, item in enumerate(raw_candidates, start=1)
@@ -1098,7 +1098,7 @@ def extract_candidates(pdf_path: Path, include_tables: bool = False) -> list[Dim
     raw_candidates = remove_grouped_digit_artifacts(raw_candidates)
     raw_candidates = [item for item in raw_candidates if not is_date_like_text(str(item.get("text", "")))]
     raw_candidates = dedupe_candidates(raw_candidates)
-    raw_candidates = visual_order_candidates(raw_candidates)
+    raw_candidates.sort(key=lambda item: (item["page"], item["y"], item["x"]))
     return [
         DimensionCandidate(number=index, **item)
         for index, item in enumerate(raw_candidates, start=1)
