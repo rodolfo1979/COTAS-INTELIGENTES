@@ -234,8 +234,6 @@ def looks_like_dimension(
 
     if compact in {"99", "01", "0.0", "00"}:
         return False, 0.0, "ignored ocr artifact"
-    if compact in {"0", "+0", "-0"}:
-        return False, 0.0, "ignored origin zero"
     if re.match(r"^[0-9]{3}$", compact) and compact not in {"110"} and not line_has_unit_nearby:
         return False, 0.0, "ignored unlikely ocr integer"
 
@@ -1422,80 +1420,10 @@ def choose_label_position(
     return best_x, page_height - best_top_y
 
 
-def qr_payload(metadata: dict[str, Any] | None) -> str:
-    data = metadata or {}
-    created_at = str(data.get("created_at", "") or "")
-    created_date = created_at[:10] if len(created_at) >= 10 else created_at
-    lines = [
-        "COTAS INTELIGENTES",
-        f"Cliente: {data.get('client', '')}",
-        f"Plano: {data.get('drawing_number', '')}",
-        f"Parte: {data.get('part_number', '')}",
-        f"Rev: {data.get('revision', '')}",
-        f"Orden: {data.get('order_number', '')}",
-        f"Fecha: {created_date}",
-        f"ID: {data.get('id', '')}",
-    ]
-    return "\n".join(line for line in lines if not line.endswith(": "))
-
-
-def draw_qr_back_page(
-    output_path: Path,
-    metadata: dict[str, Any] | None,
-    page_width: float,
-    page_height: float,
-) -> None:
-    from reportlab.graphics import renderPDF
-    from reportlab.graphics.barcode.qr import QrCodeWidget
-    from reportlab.graphics.shapes import Drawing
-
-    c = canvas.Canvas(str(output_path), pagesize=(page_width, page_height))
-    qr_size = min(144.0, page_width * 0.24, page_height * 0.24)
-    x = (page_width - qr_size) / 2
-    y = page_height * 0.52
-
-    c.setFillColor(white)
-    c.rect(0, 0, page_width, page_height, fill=1, stroke=0)
-    qr = QrCodeWidget(qr_payload(metadata))
-    bounds = qr.getBounds()
-    qr_width = bounds[2] - bounds[0]
-    qr_height = bounds[3] - bounds[1]
-    drawing = Drawing(qr_size, qr_size, transform=[qr_size / qr_width, 0, 0, qr_size / qr_height, 0, 0])
-    drawing.add(qr)
-    renderPDF.draw(drawing, c, x, y)
-
-    data = metadata or {}
-    drawing_number = str((metadata or {}).get("drawing_number", "") or "PLANO").strip()
-    c.setFont("Helvetica-Bold", 18)
-    c.setFillColor(HexColor("#111827"))
-    title = "COTAS INTELIGENTES"
-    c.drawCentredString(page_width / 2, y + qr_size + 36, title)
-    c.setFont("Helvetica-Bold", 12)
-    c.setFillColor(HexColor("#dc2626"))
-    c.drawCentredString(page_width / 2, y - 24, f"QR PLANO {drawing_number}")
-
-    c.setFont("Helvetica", 10)
-    c.setFillColor(HexColor("#111827"))
-    details = [
-        f"Cliente: {data.get('client', '')}",
-        f"Plano: {data.get('drawing_number', '')}",
-        f"Parte: {data.get('part_number', '')}",
-        f"Rev: {data.get('revision', '')}",
-        f"Orden: {data.get('order_number', '')}",
-    ]
-    line_y = y - 46
-    for line in [item for item in details if not item.endswith(": ")]:
-        c.drawCentredString(page_width / 2, line_y, line)
-        line_y -= 14
-    c.showPage()
-    c.save()
-
-
 def draw_numbered_overlay(
     original_pdf: Path,
     candidates: list[DimensionCandidate],
     output_pdf: Path,
-    metadata: dict[str, Any] | None = None,
 ) -> None:
     reader = PdfReader(str(original_pdf))
     writer = PdfWriter()
@@ -1518,7 +1446,7 @@ def draw_numbered_overlay(
         placed_label_boxes: list[PdfBBox] = []
 
         for candidate in by_page.get(page_index, []):
-            font_size = 7.7 if candidate.number < 100 else 7.0
+            font_size = 7.0 if candidate.number < 100 else 6.4
             label = str(candidate.number)
             c.setFont("Helvetica-Bold", font_size)
             text_width = c.stringWidth(label, "Helvetica-Bold", font_size)
@@ -1571,11 +1499,6 @@ def draw_numbered_overlay(
         overlay_reader = PdfReader(str(overlay_path))
         page.merge_page(overlay_reader.pages[0])
         writer.add_page(page)
-        if page_index == 1 and metadata:
-            qr_back_path = tmp_dir / "qr_back_page.pdf"
-            draw_qr_back_page(qr_back_path, metadata, width, height)
-            qr_back_reader = PdfReader(str(qr_back_path))
-            writer.add_page(qr_back_reader.pages[0])
 
     with output_pdf.open("wb") as handle:
         writer.write(handle)
@@ -1787,7 +1710,6 @@ def init_history(db_path: Path) -> None:
                 part_number text,
                 drawing_number text,
                 revision text,
-                order_number text,
                 source_hash text not null,
                 original_pdf text not null,
                 numbered_pdf text not null,
@@ -1796,11 +1718,8 @@ def init_history(db_path: Path) -> None:
             )
             """
         )
-        columns = {row[1] for row in conn.execute("pragma table_info(jobs)")}
-        if "order_number" not in columns:
-            conn.execute("alter table jobs add column order_number text")
         conn.execute(
-            "create index if not exists idx_jobs_lookup_order on jobs(client, part_number, drawing_number, revision, order_number)"
+            "create index if not exists idx_jobs_lookup on jobs(client, part_number, drawing_number, revision)"
         )
 
 
@@ -1809,9 +1728,9 @@ def save_history(db_path: Path, job: dict[str, Any]) -> None:
         conn.execute(
             """
             insert or replace into jobs (
-                id, client, part_number, drawing_number, revision, order_number, source_hash,
+                id, client, part_number, drawing_number, revision, source_hash,
                 original_pdf, numbered_pdf, candidates_json, created_at
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job["id"],
@@ -1819,7 +1738,6 @@ def save_history(db_path: Path, job: dict[str, Any]) -> None:
                 job.get("part_number"),
                 job.get("drawing_number"),
                 job.get("revision"),
-                job.get("order_number"),
                 job["source_hash"],
                 job["original_pdf"],
                 job["numbered_pdf"],
@@ -1838,7 +1756,7 @@ def analyze_command(args: argparse.Namespace) -> None:
     source_hash = sha256_file(input_pdf)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     identity = "-".join(
-        part for part in [args.client, args.part_number, args.drawing_number, args.revision, args.order_number] if part
+        part for part in [args.client, args.part_number, args.drawing_number, args.revision] if part
     )
     safe_identity = re.sub(r"[^A-Za-z0-9_.-]+", "-", identity).strip("-") or "plano"
     job_id = f"{safe_identity}-{stamp}-{source_hash[:8]}"
@@ -1859,7 +1777,11 @@ def analyze_command(args: argparse.Namespace) -> None:
         if ocr_candidates:
             candidates = ocr_candidates
             used_ocr = True
-    created_at = datetime.now(timezone.utc).isoformat()
+    draw_numbered_overlay(original_pdf, candidates, numbered_pdf)
+
+    candidates_payload = [asdict(candidate) for candidate in candidates]
+    candidates_json.write_text(json.dumps(candidates_payload, indent=2), encoding="utf-8")
+
     job = {
         "id": job_id,
         "used_ocr": used_ocr,
@@ -1867,20 +1789,14 @@ def analyze_command(args: argparse.Namespace) -> None:
         "part_number": args.part_number,
         "drawing_number": args.drawing_number,
         "revision": args.revision,
-        "order_number": args.order_number,
         "source_hash": source_hash,
         "original_pdf": str(original_pdf),
         "numbered_pdf": str(numbered_pdf),
         "candidates_json": str(candidates_json),
         "tolerances_xlsx": str(tolerances_xlsx),
-        "created_at": created_at,
+        "created_at": datetime.now(timezone.utc).isoformat(),
         "candidate_count": len(candidates),
     }
-    draw_numbered_overlay(original_pdf, candidates, numbered_pdf, job)
-
-    candidates_payload = [asdict(candidate) for candidate in candidates]
-    candidates_json.write_text(json.dumps(candidates_payload, indent=2), encoding="utf-8")
-
     generate_tolerance_workbook(candidates, tolerances_xlsx, job)
     job_json.write_text(json.dumps(job, indent=2), encoding="utf-8")
 
@@ -1899,7 +1815,6 @@ def search_command(args: argparse.Namespace) -> None:
         "part_number": args.part_number,
         "drawing_number": args.drawing_number,
         "revision": args.revision,
-        "order_number": args.order_number,
     }
     clauses = []
     values = []
@@ -1946,7 +1861,6 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--part-number", default="")
     analyze.add_argument("--drawing-number", default="")
     analyze.add_argument("--revision", default="")
-    analyze.add_argument("--order-number", default="")
     analyze.add_argument(
         "--include-tables",
         action="store_true",
@@ -1959,7 +1873,6 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--part-number", default="")
     search.add_argument("--drawing-number", default="")
     search.add_argument("--revision", default="")
-    search.add_argument("--order-number", default="")
     search.add_argument("--limit", type=int, default=20)
     search.set_defaults(func=search_command)
 
