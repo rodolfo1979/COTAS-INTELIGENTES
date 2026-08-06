@@ -372,6 +372,17 @@ def detected_general_tolerance_bboxes(words: list[dict[str, Any]], page_width: f
         if not GENERAL_TOLERANCE_LINE_RE.search(line_text):
             continue
 
+        line_box = union_pdf_words(line_words)
+        line_is_title_block_context = (
+            line_box["y"] >= page_height * 0.58
+            or line_box["x"] <= page_width * 0.08
+            or "UNLESS OTHERWISE SPECIFIED" in line_text.upper()
+            or "DIMENSIONS ARE IN" in line_text.upper()
+            or "TOLERANCES UNLESS" in line_text.upper()
+        )
+        if not line_is_title_block_context:
+            continue
+
         block_words = list(line_words)
         for extra_line in lines[index + 1 : index + 8]:
             if not extra_line:
@@ -388,6 +399,49 @@ def detected_general_tolerance_bboxes(words: list[dict[str, Any]], page_width: f
         bottom = min(page_height, union["y"] + union["height"] + 6)
         if bottom >= page_height * 0.55 or x0 <= page_width * 0.35:
             boxes.append((x0, top, x1, bottom))
+
+    return boxes
+
+
+def detected_revision_history_bboxes(words: list[dict[str, Any]], page_width: float, page_height: float) -> list[PdfBBox]:
+    boxes: list[PdfBBox] = []
+    if not words:
+        return boxes
+
+    lines: list[list[dict[str, Any]]] = []
+    for word in sorted(words, key=lambda item: (float(item.get("top", 0)), float(item.get("x0", 0)))):
+        if not lines or abs(float(lines[-1][0].get("top", 0)) - float(word.get("top", 0))) >= 4:
+            lines.append([word])
+        else:
+            lines[-1].append(word)
+
+    for index, line_words in enumerate(lines):
+        line_text = normalize_text(" ".join(str(word.get("text", "")) for word in line_words)).upper()
+        line_box = union_pdf_words(line_words)
+        if "REVISION" not in line_text and "REV." not in line_text:
+            continue
+        if line_box["y"] > page_height * 0.25 or line_box["x"] < page_width * 0.45:
+            continue
+
+        block_words = list(line_words)
+        for extra_line in lines[index + 1 : index + 6]:
+            if not extra_line:
+                continue
+            extra_box = union_pdf_words(extra_line)
+            if extra_box["y"] > page_height * 0.28:
+                break
+            if extra_box["x"] >= page_width * 0.42:
+                block_words.extend(extra_line)
+
+        union = union_pdf_words(block_words)
+        boxes.append(
+            (
+                max(0.0, union["x"] - 12),
+                max(0.0, union["y"] - 8),
+                min(page_width, union["x"] + union["width"] + 12),
+                min(page_height, union["y"] + union["height"] + 8),
+            )
+        )
 
     return boxes
 
@@ -1084,7 +1138,12 @@ def extract_candidates(pdf_path: Path, include_tables: bool = False) -> list[Dim
                 float(page.width),
                 float(page.height),
             )
-            excluded_bboxes = [*table_bboxes, *general_tolerance_bboxes]
+            revision_history_bboxes = [] if include_tables else detected_revision_history_bboxes(
+                all_words,
+                float(page.width),
+                float(page.height),
+            )
+            excluded_bboxes = [*table_bboxes, *general_tolerance_bboxes, *revision_history_bboxes]
             raw_candidates.extend(
                 extract_rotated_word_candidates(
                     all_words,
