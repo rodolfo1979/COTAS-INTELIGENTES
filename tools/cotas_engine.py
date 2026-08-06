@@ -1325,6 +1325,12 @@ def clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(value, maximum))
 
 
+def label_font_size_for_page(page_width: float, page_height: float, number: int) -> float:
+    base_size = 8.6 if number < 100 else 7.8
+    sheet_scale = clamp(min(page_width, page_height) / 800.0, 1.0, 1.25)
+    return round(base_size * sheet_scale, 2)
+
+
 def boxes_intersect(a: PdfBBox, b: PdfBBox, padding: float = 0.0) -> bool:
     ax0, at, ax1, ab = a
     bx0, bt, bx1, bb = b
@@ -1723,7 +1729,7 @@ def draw_numbered_overlay(
         placed_label_boxes: list[PdfBBox] = []
 
         for candidate in by_page.get(page_index, []):
-            font_size = 7.7 if candidate.number < 100 else 7.0
+            font_size = label_font_size_for_page(width, height, candidate.number)
             label = str(candidate.number)
             c.setFont("Helvetica-Bold", font_size)
             text_width = c.stringWidth(label, "Helvetica-Bold", font_size)
