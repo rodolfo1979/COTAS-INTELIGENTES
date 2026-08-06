@@ -135,8 +135,15 @@ def is_date_like_text(text: str) -> bool:
     )
 
 
+def inspection_nominal_text(text: str) -> str:
+    clean = normalize_text(text).strip()
+    clean = re.sub(r"(?i)^\s*\d+\s*X\s+", "", clean)
+    clean = re.sub(r"(?i)^\s*\d+\s*X(?=[RMS]?\s*(?:\d|\.))", "", clean)
+    return clean.strip()
+
+
 def tolerance_info(text: str) -> dict[str, Any]:
-    clean = normalize_text(text)
+    clean = inspection_nominal_text(text)
     unit_match = re.search(r"(?i)\b(mm|cm|in|deg|grados)\b|\"", clean)
     unit = unit_match.group(0).replace('"', "in").lower() if unit_match else ""
 
@@ -1558,7 +1565,7 @@ def generate_tolerance_workbook(
         is_thread = is_thread_callout(candidate.text)
         values = [
             candidate.number,
-            candidate.text,
+            inspection_nominal_text(candidate.text),
             "",
             "" if is_thread else info["tol_plus"],
             "" if is_thread else info["tol_minus"],
