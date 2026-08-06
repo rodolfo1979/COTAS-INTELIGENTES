@@ -1483,7 +1483,7 @@ def draw_plan_qr(
     from reportlab.graphics.barcode.qr import QrCodeWidget
     from reportlab.graphics.shapes import Drawing
 
-    qr_size = 54.0
+    qr_size = 72.0
     x, y = choose_qr_position(page_width, page_height, qr_size, text_boxes, graphic_boxes, label_boxes)
     c.setFillColor(white)
     c.setStrokeColor(HexColor("#dc2626"))
