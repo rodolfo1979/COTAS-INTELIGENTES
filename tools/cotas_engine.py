@@ -234,6 +234,8 @@ def looks_like_dimension(
 
     if compact in {"99", "01", "0.0", "00"}:
         return False, 0.0, "ignored ocr artifact"
+    if compact in {"0", "0.00", "0.000"}:
+        return False, 0.0, "ignored origin zero"
     if re.match(r"^[0-9]{3}$", compact) and compact not in {"110"} and not line_has_unit_nearby:
         return False, 0.0, "ignored unlikely ocr integer"
 
