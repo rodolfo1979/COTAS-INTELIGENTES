@@ -262,6 +262,10 @@ def looks_like_dimension(
 
     if line_text and NON_DIMENSION_LINE_RE.search(line_text) and not has_strong_marker:
         return False, 0.0, "ignored title block or note line"
+    if line_text and "/" in line_text and re.search(r"(?i)\b(?:rev|revision|date|approved|history)\b", line_text):
+        return False, 0.0, "ignored revision date fragment"
+    if re.match(r"^\d{1,2}$", compact) and re.search(r"\b\d{4}\b", line_text) and not line_has_unit_nearby:
+        return False, 0.0, "ignored date number fragment"
     if line_text and GENERAL_TOLERANCE_LINE_RE.search(line_text):
         return False, 0.0, "ignored general tolerance block"
     if line_text and GENERAL_TOLERANCE_NOTATION_RE.search(line_text):
@@ -615,6 +619,90 @@ def extract_rotated_word_candidates(
                 **box,
                 "confidence": round(min(confidence + 0.04, 0.96), 3),
                 "reason": f"rotated {reason}",
+            }
+        )
+
+    return candidates
+
+
+def extract_stacked_autocad_decimal_candidates(
+    chars: list[dict[str, Any]],
+    page_index: int,
+    excluded_bboxes: list[PdfBBox] | None = None,
+) -> list[dict[str, Any]]:
+    excluded_bboxes = excluded_bboxes or []
+    usable: list[dict[str, Any]] = []
+    for char in chars:
+        text = normalize_text(str(char.get("text", ""))).strip()
+        if text not in {".", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}:
+            continue
+        x0 = float(char.get("x0", 0))
+        top = float(char.get("top", 0))
+        x1 = float(char.get("x1", x0))
+        bottom = float(char.get("bottom", top))
+        if word_inside_any_bbox({"x0": x0, "x1": x1, "top": top, "bottom": bottom}, excluded_bboxes):
+            continue
+
+        width = x1 - x0
+        height = bottom - top
+        # AutoCAD sometimes exports rotated dimensions as large individual
+        # upright glyphs stacked in a column. Small title-block tolerances are
+        # intentionally below this threshold.
+        if width < 18 or height < 8:
+            continue
+        usable.append({"text": text, "x0": x0, "top": top, "x1": x1, "bottom": bottom})
+
+    columns: list[list[dict[str, Any]]] = []
+    for char in sorted(usable, key=lambda item: ((float(item["x0"]) + float(item["x1"])) / 2, float(item["top"]))):
+        center_x = (float(char["x0"]) + float(char["x1"])) / 2
+        placed = False
+        for column in columns:
+            column_center = sum((float(item["x0"]) + float(item["x1"])) / 2 for item in column) / len(column)
+            if abs(center_x - column_center) <= 6:
+                column.append(char)
+                placed = True
+                break
+        if not placed:
+            columns.append([char])
+
+    candidates: list[dict[str, Any]] = []
+    column_groups: list[list[dict[str, Any]]] = []
+    for column in columns:
+        ordered_column = sorted(column, key=lambda item: float(item["top"]))
+        current: list[dict[str, Any]] = []
+        for char in ordered_column:
+            if current and float(char["top"]) - float(current[-1]["bottom"]) > 48:
+                column_groups.append(current)
+                current = []
+            current.append(char)
+        if current:
+            column_groups.append(current)
+
+    for column in column_groups:
+        if len(column) not in {3, 4}:
+            continue
+        ordered = sorted(column, key=lambda item: float(item["top"]))
+        texts = [str(item["text"]) for item in ordered]
+        if "." not in texts or sum(1 for text in texts if text.isdigit()) != len(texts) - 1:
+            continue
+
+        value = "".join(reversed(texts))
+        if not re.match(r"^(?:\.\d{2}|\d\.\d{2})$", value):
+            continue
+        if value.endswith(".00") or value == ".00":
+            continue
+
+        box = union_pdf_words(ordered)
+        candidates.append(
+            {
+                "page": page_index,
+                "text": value,
+                "x": box["x"],
+                "y": box["y"],
+                "width": box["width"],
+                "height": box["height"],
+                "confidence": 0.78,
+                "reason": "stacked AutoCAD decimal dimension",
             }
         )
 
@@ -1138,18 +1226,20 @@ def extract_candidates(pdf_path: Path, include_tables: bool = False) -> list[Dim
                 float(page.width),
                 float(page.height),
             )
-            revision_history_bboxes = [] if include_tables else detected_revision_history_bboxes(
-                all_words,
-                float(page.width),
-                float(page.height),
-            )
-            excluded_bboxes = [*table_bboxes, *general_tolerance_bboxes, *revision_history_bboxes]
+            excluded_bboxes = [*table_bboxes, *general_tolerance_bboxes]
             raw_candidates.extend(
                 extract_rotated_word_candidates(
                     all_words,
                     page_index,
                     float(page.width),
                     float(page.height),
+                    excluded_bboxes,
+                )
+            )
+            raw_candidates.extend(
+                extract_stacked_autocad_decimal_candidates(
+                    page.chars,
+                    page_index,
                     excluded_bboxes,
                 )
             )
