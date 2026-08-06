@@ -91,6 +91,12 @@ def normalize_text(text: str) -> str:
     return (
         text.strip()
         .replace(",", ".")
+        .replace("\uf060", "\u00b1")
+        .replace("\uf0b1", "\u00b1")
+        .replace("\uf06e", "\u2300")
+        .replace("\uf06d", "M")
+        .replace("\uf078", "")
+        .replace("\uf06a", "")
         .replace("\u00d8", "R")
         .replace("\u2300", "R")
         .replace("\u00b0", "deg")
@@ -1570,7 +1576,7 @@ def choose_label_position(
         expanded_box[2] + 3,
         expanded_box[3] + 3,
     )
-    rings = [10, 14, 20, 28, 38, 50, 64]
+    rings = [9, 12, 16, 22, 30, 40]
     directions = [
         (1.0, -0.8),
         (-1.0, -0.8),
@@ -1604,7 +1610,7 @@ def choose_label_position(
             candidate_points.append((center_x, candidate.y + candidate.height + gap, gap, "rotated_axis_below"))
 
     min_horizontal_gap = 18 if is_rotated_dimension else max(12.0, label_half_width + 6.0)
-    for gap in [7, 10, 14, 18, 24, 32, 42, 56]:
+    for gap in [8, 11, 15, 21, 30, 40]:
         if gap < min_horizontal_gap:
             continue
         candidate_points.append((expanded_box[0] - gap, center_top_y, gap, "horizontal"))
@@ -1624,6 +1630,9 @@ def choose_label_position(
             dy = ring * dir_y / length
             candidate_points.append((center_x + dx, center_top_y + dy, abs(dx) + abs(dy), "local"))
 
+    fallback_x = best_x
+    fallback_top_y = best_top_y
+    fallback_score = float("inf")
     for raw_x, raw_top_y, distance, placement_mode in candidate_points:
             x = clamp(raw_x, label_half_width + 4, page_width - label_half_width - 4)
             top_y = clamp(raw_top_y, label_half_height + 4, page_height - label_half_height - 4)
@@ -1659,6 +1668,16 @@ def choose_label_position(
             leader_start = (line_start_x, page_height - line_start_pdf_y)
             leader_end = (x, top_y)
             leader_length = ((leader_end[0] - leader_start[0]) ** 2 + (leader_end[1] - leader_start[1]) ** 2) ** 0.5
+            max_leader = 56 if is_rotated_dimension else 48
+            if forbidden_hits:
+                continue
+            fallback_score_candidate = leader_length * 1000 + text_hits * 9000 + label_hits * 15000 + source_overlap * 200
+            if fallback_score_candidate < fallback_score:
+                fallback_score = fallback_score_candidate
+                fallback_x = x
+                fallback_top_y = top_y
+            if leader_length > max_leader:
+                continue
             leader_text_hits = sum(
                 1
                 for box in leader_text_boxes
@@ -1714,7 +1733,7 @@ def choose_label_position(
             if placement_mode == "rotated_axis_above" and text_hits == 0 and label_hits == 0:
                 horizontal_bonus -= 30000
 
-            distance_weight = 18 if placement_mode == "horizontal" else 16
+            distance_weight = 950 if placement_mode == "horizontal" else 900
 
             score = (
                 text_hits * 25000
@@ -1729,6 +1748,7 @@ def choose_label_position(
                 + leader_label_hits * 4500
                 + leader_graphic_hits * 1200
                 + distance * distance_weight
+                + leader_length * 1200
                 + edge_bonus
                 + horizontal_bonus
                 + short_leader_penalty
@@ -1738,6 +1758,10 @@ def choose_label_position(
                 best_score = score
                 best_x = x
                 best_top_y = top_y
+
+    if best_score == float("inf"):
+        best_x = fallback_x
+        best_top_y = fallback_top_y
 
     return best_x, page_height - best_top_y
 
@@ -1760,6 +1784,8 @@ def draw_numbered_overlay(
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
     for page_index, page in enumerate(reader.pages, start=1):
+        if int(page.get("/Rotate", 0) or 0) % 360:
+            page.transfer_rotation_to_content()
         width = float(page.mediabox.width)
         height = float(page.mediabox.height)
         overlay_path = tmp_dir / f"overlay_{page_index}.pdf"
