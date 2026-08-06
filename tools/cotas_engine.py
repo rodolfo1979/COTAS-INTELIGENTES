@@ -648,41 +648,34 @@ def visual_order_candidates(items: list[dict[str, Any]]) -> list[dict[str, Any]]
         by_page.setdefault(int(item["page"]), []).append(item)
 
     for page in sorted(by_page):
-        page_items = sorted(
-            by_page[page],
-            key=lambda item: (
-                float(item["y"]) + float(item.get("height", 0)) / 2,
-                float(item["x"]) + float(item.get("width", 0)) / 2,
-            ),
-        )
-        bands: list[dict[str, Any]] = []
+        page_items = by_page[page]
         heights = sorted(float(item.get("height", 0)) for item in page_items if float(item.get("height", 0)) > 0)
         median_height = heights[len(heights) // 2] if heights else 8.0
-        band_tolerance = max(46.0, median_height * 5.5)
-        for item in page_items:
+        band_height = max(34.0, median_height * 4.2)
+        min_y = min(float(item["y"]) + float(item.get("height", 0)) / 2 for item in page_items)
+        banded = sorted(
+            page_items,
+            key=lambda item: (
+                int(((float(item["y"]) + float(item.get("height", 0)) / 2) - min_y) / band_height),
+                float(item["x"]) + float(item.get("width", 0)) / 2,
+                float(item["y"]) + float(item.get("height", 0)) / 2,
+            ),
+        )
+        current_band_key: int | None = None
+        current_band: list[dict[str, Any]] = []
+        for item in banded:
             center_y = float(item["y"]) + float(item.get("height", 0)) / 2
-            if not bands:
-                bands.append({"items": [item], "min_y": center_y, "max_y": center_y})
-                continue
-
-            current_band = bands[-1]
-            if center_y - float(current_band["min_y"]) <= band_tolerance:
-                current_band["items"].append(item)
-                current_band["min_y"] = min(float(current_band["min_y"]), center_y)
-                current_band["max_y"] = max(float(current_band["max_y"]), center_y)
-            else:
-                bands.append({"items": [item], "min_y": center_y, "max_y": center_y})
-
-        for band in sorted(bands, key=lambda entry: float(entry["min_y"])):
-            band_items = list(band["items"])
+            band_key = int((center_y - min_y) / band_height)
+            if current_band_key is None:
+                current_band_key = band_key
+            if band_key != current_band_key:
+                ordered.extend(current_band)
+                current_band = []
+                current_band_key = band_key
+            current_band.append(item)
+        if current_band:
             ordered.extend(
-                sorted(
-                    band_items,
-                    key=lambda item: (
-                        float(item["x"]) + float(item.get("width", 0)) / 2,
-                        float(item["y"]) + float(item.get("height", 0)) / 2,
-                    ),
-                )
+                sorted(current_band, key=lambda item: float(item["x"]) + float(item.get("width", 0)) / 2)
             )
 
     return ordered
@@ -1449,11 +1442,11 @@ def choose_qr_position(
 ) -> tuple[float, float]:
     margin = 18.0
     options = [
-        (margin, page_height - margin - qr_size),
         (page_width - margin - qr_size, page_height - margin - qr_size),
-        (margin, margin),
         (page_width - margin - qr_size, margin),
         (page_width - margin - qr_size, page_height * 0.50 - qr_size / 2),
+        (margin, margin),
+        (margin, page_height - margin - qr_size),
         (margin, page_height * 0.50 - qr_size / 2),
     ]
     best = options[0]
@@ -1463,7 +1456,9 @@ def choose_qr_position(
         text_hits = sum(1 for box in text_boxes if boxes_intersect(top_box, box, padding=4.0))
         graphic_hits = sum(1 for box in graphic_boxes if boxes_intersect(top_box, box, padding=3.0))
         label_hits = sum(1 for box in label_boxes if boxes_intersect(top_box, box, padding=4.0))
-        score = text_hits * 1000 + label_hits * 800 + graphic_hits * 260 + (0 if x > page_width / 2 else 60)
+        top_penalty = 1200 if y > page_height * 0.72 else 0
+        left_penalty = 900 if x < page_width * 0.25 else 0
+        score = text_hits * 1000 + label_hits * 800 + graphic_hits * 260 + top_penalty + left_penalty
         if score < best_score:
             best_score = score
             best = (x, y)
