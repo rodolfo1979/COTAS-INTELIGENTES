@@ -234,6 +234,8 @@ def looks_like_dimension(
 
     if compact in {"99", "01", "0.0", "00"}:
         return False, 0.0, "ignored ocr artifact"
+    if compact in {"0", "+0", "-0"}:
+        return False, 0.0, "ignored origin zero"
     if re.match(r"^[0-9]{3}$", compact) and compact not in {"110"} and not line_has_unit_nearby:
         return False, 0.0, "ignored unlikely ocr integer"
 
@@ -1529,7 +1531,7 @@ def draw_numbered_overlay(
         placed_label_boxes: list[PdfBBox] = []
 
         for candidate in by_page.get(page_index, []):
-            font_size = 7.0 if candidate.number < 100 else 6.4
+            font_size = 7.7 if candidate.number < 100 else 7.0
             label = str(candidate.number)
             c.setFont("Helvetica-Bold", font_size)
             text_width = c.stringWidth(label, "Helvetica-Bold", font_size)
