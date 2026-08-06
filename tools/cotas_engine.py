@@ -1297,6 +1297,11 @@ def choose_label_position(
     # Shop-friendly default: place numbers on the same horizontal line as the
     # dimension value, either to its left or right.
     is_rotated_dimension = "rotated" in candidate.reason
+    if is_rotated_dimension:
+        for gap in [8, 12, 18, 26, 36]:
+            candidate_points.append((center_x, candidate.y - gap, gap, "rotated_axis"))
+            candidate_points.append((center_x, candidate.y + candidate.height + gap, gap, "rotated_axis"))
+
     min_horizontal_gap = 18 if is_rotated_dimension else 12
     for gap in [10, 14, 18, 24, 32, 42, 56]:
         if gap < min_horizontal_gap:
@@ -1394,6 +1399,11 @@ def choose_label_position(
                     horizontal_bonus -= 2500
             elif horizontal and text_hits == 0 and label_hits == 0 and leader_text_hits == 0:
                 horizontal_bonus = -2600
+            axis_aligned = placement_mode == "rotated_axis" and abs(x - center_x) <= 2.5
+            if axis_aligned and text_hits == 0 and label_hits == 0 and leader_text_hits == 0 and leader_label_hits == 0:
+                horizontal_bonus -= 18000
+            elif axis_aligned and text_hits == 0 and label_hits == 0:
+                horizontal_bonus -= 5000
 
             distance_weight = 18 if placement_mode == "horizontal" else 16
 
@@ -1490,7 +1500,7 @@ def draw_numbered_overlay(
             vec_x = line_start_x - pdf_x
             vec_y = line_start_y - pdf_y
             vec_len = (vec_x * vec_x + vec_y * vec_y) ** 0.5 or 1.0
-            if vec_len > 12:
+            if vec_len > 1.5:
                 label_edge_x = pdf_x + (vec_x / vec_len) * label_half_width
                 label_edge_y = pdf_y + (vec_y / vec_len) * label_half_height
                 c.line(line_start_x, line_start_y, label_edge_x, label_edge_y)
