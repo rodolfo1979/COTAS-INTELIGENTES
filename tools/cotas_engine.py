@@ -1000,7 +1000,7 @@ def extract_ocr_candidates(pdf_path: Path) -> list[DimensionCandidate]:
     raw_candidates = remove_grouped_digit_artifacts(raw_candidates)
     raw_candidates = [item for item in raw_candidates if not is_date_like_text(str(item.get("text", "")))]
     raw_candidates = dedupe_candidates(raw_candidates)
-    raw_candidates.sort(key=lambda item: (item["page"], item["y"], item["x"]))
+    raw_candidates = visual_order_candidates(raw_candidates)
     return [
         DimensionCandidate(number=index, **item)
         for index, item in enumerate(raw_candidates, start=1)
@@ -1098,7 +1098,7 @@ def extract_candidates(pdf_path: Path, include_tables: bool = False) -> list[Dim
     raw_candidates = remove_grouped_digit_artifacts(raw_candidates)
     raw_candidates = [item for item in raw_candidates if not is_date_like_text(str(item.get("text", "")))]
     raw_candidates = dedupe_candidates(raw_candidates)
-    raw_candidates.sort(key=lambda item: (item["page"], item["y"], item["x"]))
+    raw_candidates = visual_order_candidates(raw_candidates)
     return [
         DimensionCandidate(number=index, **item)
         for index, item in enumerate(raw_candidates, start=1)
@@ -1269,7 +1269,7 @@ def choose_label_position(
         candidate.x + candidate.width + 3,
         candidate.y + candidate.height + 3,
     )
-    rings = [18, 26, 36, 48, 62, 78, 96]
+    rings = [10, 14, 20, 28, 38, 50, 64]
     directions = [
         (1.0, -0.8),
         (-1.0, -0.8),
@@ -1297,8 +1297,8 @@ def choose_label_position(
     # Shop-friendly default: place numbers on the same horizontal line as the
     # dimension value, either to its left or right.
     is_rotated_dimension = "rotated" in candidate.reason
-    min_horizontal_gap = 42 if is_rotated_dimension else 24
-    for gap in [16, 24, 34, 46, 60, 78, 96]:
+    min_horizontal_gap = 18 if is_rotated_dimension else 12
+    for gap in [10, 14, 18, 24, 32, 42, 56]:
         if gap < min_horizontal_gap:
             continue
         candidate_points.append((candidate.x - gap, center_top_y, gap, "horizontal"))
@@ -1367,15 +1367,15 @@ def choose_label_position(
             edge_bonus = 0
             if x < page_width * 0.12 or x > page_width * 0.88 or top_y < page_height * 0.12 or top_y > page_height * 0.88:
                 edge_bonus = -120
-            min_leader = 30 if is_rotated_dimension else 18
-            short_leader_penalty = (min_leader - leader_length) * 900 if leader_length < min_leader else 0
-            soft_max_leader = 58 if placement_mode == "horizontal" else 70
-            hard_max_leader = 88 if placement_mode == "horizontal" else 105
+            min_leader = 12 if is_rotated_dimension else 9
+            short_leader_penalty = (min_leader - leader_length) * 350 if leader_length < min_leader else 0
+            soft_max_leader = 34 if placement_mode == "horizontal" else 42
+            hard_max_leader = 58 if placement_mode == "horizontal" else 68
             long_leader_penalty = 0
             if leader_length > soft_max_leader:
-                long_leader_penalty += (leader_length - soft_max_leader) * 1200
+                long_leader_penalty += (leader_length - soft_max_leader) * 2200
             if leader_length > hard_max_leader:
-                long_leader_penalty += 200000 + (leader_length - hard_max_leader) * 3500
+                long_leader_penalty += 300000 + (leader_length - hard_max_leader) * 5000
             horizontal = placement_mode == "horizontal" and abs(top_y - center_top_y) <= 2.5
             clean_horizontal = (
                 horizontal
@@ -1389,13 +1389,13 @@ def choose_label_position(
             )
             horizontal_bonus = 0
             if clean_horizontal:
-                horizontal_bonus = -8500
+                horizontal_bonus = -14000
                 if is_rotated_dimension:
-                    horizontal_bonus -= 1500
+                    horizontal_bonus -= 2500
             elif horizontal and text_hits == 0 and label_hits == 0 and leader_text_hits == 0:
-                horizontal_bonus = -1200
+                horizontal_bonus = -2600
 
-            distance_weight = 7 if placement_mode == "horizontal" else 6
+            distance_weight = 18 if placement_mode == "horizontal" else 16
 
             score = (
                 text_hits * 25000
@@ -1490,9 +1490,10 @@ def draw_numbered_overlay(
             vec_x = line_start_x - pdf_x
             vec_y = line_start_y - pdf_y
             vec_len = (vec_x * vec_x + vec_y * vec_y) ** 0.5 or 1.0
-            label_edge_x = pdf_x + (vec_x / vec_len) * label_half_width
-            label_edge_y = pdf_y + (vec_y / vec_len) * label_half_height
-            c.line(line_start_x, line_start_y, label_edge_x, label_edge_y)
+            if vec_len > 12:
+                label_edge_x = pdf_x + (vec_x / vec_len) * label_half_width
+                label_edge_y = pdf_y + (vec_y / vec_len) * label_half_height
+                c.line(line_start_x, line_start_y, label_edge_x, label_edge_y)
 
         c.save()
 
