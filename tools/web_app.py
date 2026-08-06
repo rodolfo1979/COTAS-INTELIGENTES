@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 STORAGE = ROOT / "storage"
 UPLOADS = STORAGE / "uploads"
 CLIENTS_FILE = ROOT / "data" / "clients.json"
-ENGINE_VERSION = "2026-08-06-reject-numbered-uploads"
+ENGINE_VERSION = "2026-08-06-hard-forbidden-label-zones"
 AUTH_USER = os.getenv("COTAS_ADMIN_USER", "admin")
 AUTH_PASSWORD = os.getenv("COTAS_ADMIN_PASSWORD", "")
 AUTH_SECRET = os.getenv("COTAS_SECRET_KEY", "")
@@ -875,15 +875,6 @@ class App(BaseHTTPRequestHandler):
         file_item = form["pdf"] if "pdf" in form else None
         if file_item is None or not getattr(file_item, "filename", ""):
             self.send_html("Error", "<section><h2>Debe subir un PDF.</h2></section>", 400)
-            return
-        original_filename = str(getattr(file_item, "filename", "") or "").lower()
-        if "numbered" in original_filename or "numerado" in original_filename:
-            self.send_html(
-                "Error",
-                "<section><h2>Suba el PDF original, no el PDF ya numerado.</h2>"
-                "<p>Los PDFs numerados contienen marcas rojas previas y el sistema puede leerlas como cotas.</p></section>",
-                400,
-            )
             return
         upload_path = UPLOADS / f"{uuid.uuid4().hex}.pdf"
         with upload_path.open("wb") as handle:

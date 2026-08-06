@@ -150,6 +150,15 @@ def is_date_like_text(text: str) -> bool:
     )
 
 
+def line_has_date_fragment(text: str) -> bool:
+    clean = normalize_text(text)
+    return bool(
+        re.search(r"\b\d{1,2}/\d{1,2}/\d{2,4}\b", clean)
+        or re.search(r"\b\d{1,2}\s+\d{1,2}\s+\d{2,4}\b", clean)
+        or re.search(r"\b\d{4}-\d{1,2}-\d{1,2}\b", clean)
+    )
+
+
 def inspection_nominal_text(text: str) -> str:
     clean = normalize_text(text).strip()
     clean = re.sub(r"(?i)^\s*\d+\s*X\s+", "", clean)
@@ -264,6 +273,11 @@ def looks_like_dimension(
         return False, 0.0, "ignored title block or note line"
     if line_text and "/" in line_text and re.search(r"(?i)\b(?:rev|revision|date|approved|history)\b", line_text):
         return False, 0.0, "ignored revision date fragment"
+    if line_text and line_has_date_fragment(line_text) and re.search(
+        r"(?i)\b(?:rev|revision|date|approved|history|add|was|clarified|release|initial|description)\b",
+        line_text,
+    ):
+        return False, 0.0, "ignored revision history row"
     if re.match(r"^\d{1,2}$", compact) and re.search(r"\b\d{4}\b", line_text) and not line_has_unit_nearby:
         return False, 0.0, "ignored date number fragment"
     if line_text and GENERAL_TOLERANCE_LINE_RE.search(line_text):
@@ -1473,6 +1487,25 @@ def page_graphic_bboxes(pdf_path: Path) -> dict[int, list[PdfBBox]]:
     return occupied
 
 
+def page_forbidden_label_bboxes(pdf_path: Path) -> dict[int, list[PdfBBox]]:
+    occupied: dict[int, list[PdfBBox]] = {}
+    try:
+        with pdfplumber.open(str(pdf_path)) as pdf:
+            for page_index, page in enumerate(pdf.pages, start=1):
+                words = page.extract_words(
+                    keep_blank_chars=False,
+                    use_text_flow=False,
+                    extra_attrs=[],
+                )
+                occupied[page_index] = [
+                    *detected_general_tolerance_bboxes(words, float(page.width), float(page.height)),
+                    *detected_revision_history_bboxes(words, float(page.width), float(page.height)),
+                ]
+    except Exception:
+        return {}
+    return occupied
+
+
 def expanded_horizontal_source_box(candidate: DimensionCandidate, text_boxes: list[PdfBBox]) -> PdfBBox:
     box = (
         candidate.x,
@@ -1525,7 +1558,9 @@ def choose_label_position(
     text_boxes: list[PdfBBox],
     graphic_boxes: list[PdfBBox],
     placed_label_boxes: list[PdfBBox],
+    forbidden_label_boxes: list[PdfBBox] | None = None,
 ) -> tuple[float, float]:
+    forbidden_label_boxes = forbidden_label_boxes or []
     center_x = candidate.x + candidate.width / 2
     center_top_y = candidate.y + candidate.height / 2
     expanded_box = expanded_horizontal_source_box(candidate, text_boxes)
@@ -1604,6 +1639,9 @@ def choose_label_position(
             source_overlap = intersection_area(label_box, source_box, padding=2.0)
             text_hits = sum(1 for box in label_text_boxes if boxes_intersect(label_box, box, padding=3.0))
             label_hits = sum(1 for box in placed_label_boxes if boxes_intersect(label_box, box, padding=4.0))
+            forbidden_hits = sum(
+                1 for box in forbidden_label_boxes if boxes_intersect(label_box, box, padding=4.0)
+            )
             source_hit = boxes_intersect(label_box, source_box, padding=2.0)
             graphic_hits = sum(1 for box in graphic_boxes if boxes_intersect(label_box, box, padding=2.0))
 
@@ -1681,6 +1719,7 @@ def choose_label_position(
             score = (
                 text_hits * 25000
                 + label_hits * 40000
+                + forbidden_hits * 10000000
                 + (100000 if source_hit else 0)
                 + graphic_hits * 6500
                 + text_overlap * 200
@@ -1712,6 +1751,7 @@ def draw_numbered_overlay(
     writer = PdfWriter()
     occupied_by_page = page_text_bboxes(original_pdf)
     graphics_by_page = page_graphic_bboxes(original_pdf)
+    forbidden_labels_by_page = page_forbidden_label_bboxes(original_pdf)
     by_page: dict[int, list[DimensionCandidate]] = {}
     for candidate in candidates:
         by_page.setdefault(candidate.page, []).append(candidate)
@@ -1726,7 +1766,8 @@ def draw_numbered_overlay(
 
         c = canvas.Canvas(str(overlay_path), pagesize=(width, height))
         c.setLineWidth(0.55)
-        placed_label_boxes: list[PdfBBox] = []
+        forbidden_label_boxes = list(forbidden_labels_by_page.get(page_index, []))
+        placed_label_boxes: list[PdfBBox] = list(forbidden_label_boxes)
 
         for candidate in by_page.get(page_index, []):
             font_size = label_font_size_for_page(width, height, candidate.number)
@@ -1746,6 +1787,7 @@ def draw_numbered_overlay(
                 occupied_by_page.get(page_index, []),
                 graphics_by_page.get(page_index, []),
                 placed_label_boxes,
+                forbidden_label_boxes,
             )
             label_top_y = height - pdf_y
             placed_label_boxes.append(
