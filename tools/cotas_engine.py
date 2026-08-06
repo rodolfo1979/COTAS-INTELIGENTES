@@ -648,34 +648,41 @@ def visual_order_candidates(items: list[dict[str, Any]]) -> list[dict[str, Any]]
         by_page.setdefault(int(item["page"]), []).append(item)
 
     for page in sorted(by_page):
-        page_items = by_page[page]
-        heights = sorted(float(item.get("height", 0)) for item in page_items if float(item.get("height", 0)) > 0)
-        median_height = heights[len(heights) // 2] if heights else 8.0
-        band_height = max(34.0, median_height * 4.2)
-        min_y = min(float(item["y"]) + float(item.get("height", 0)) / 2 for item in page_items)
-        banded = sorted(
-            page_items,
+        page_items = sorted(
+            by_page[page],
             key=lambda item: (
-                int(((float(item["y"]) + float(item.get("height", 0)) / 2) - min_y) / band_height),
-                float(item["x"]) + float(item.get("width", 0)) / 2,
                 float(item["y"]) + float(item.get("height", 0)) / 2,
+                float(item["x"]) + float(item.get("width", 0)) / 2,
             ),
         )
-        current_band_key: int | None = None
-        current_band: list[dict[str, Any]] = []
-        for item in banded:
+        bands: list[dict[str, Any]] = []
+        heights = sorted(float(item.get("height", 0)) for item in page_items if float(item.get("height", 0)) > 0)
+        median_height = heights[len(heights) // 2] if heights else 8.0
+        band_tolerance = max(46.0, median_height * 5.5)
+        for item in page_items:
             center_y = float(item["y"]) + float(item.get("height", 0)) / 2
-            band_key = int((center_y - min_y) / band_height)
-            if current_band_key is None:
-                current_band_key = band_key
-            if band_key != current_band_key:
-                ordered.extend(current_band)
-                current_band = []
-                current_band_key = band_key
-            current_band.append(item)
-        if current_band:
+            if not bands:
+                bands.append({"items": [item], "min_y": center_y, "max_y": center_y})
+                continue
+
+            current_band = bands[-1]
+            if center_y - float(current_band["min_y"]) <= band_tolerance:
+                current_band["items"].append(item)
+                current_band["min_y"] = min(float(current_band["min_y"]), center_y)
+                current_band["max_y"] = max(float(current_band["max_y"]), center_y)
+            else:
+                bands.append({"items": [item], "min_y": center_y, "max_y": center_y})
+
+        for band in sorted(bands, key=lambda entry: float(entry["min_y"])):
+            band_items = list(band["items"])
             ordered.extend(
-                sorted(current_band, key=lambda item: float(item["x"]) + float(item.get("width", 0)) / 2)
+                sorted(
+                    band_items,
+                    key=lambda item: (
+                        float(item["x"]) + float(item.get("width", 0)) / 2,
+                        float(item["y"]) + float(item.get("height", 0)) / 2,
+                    ),
+                )
             )
 
     return ordered
