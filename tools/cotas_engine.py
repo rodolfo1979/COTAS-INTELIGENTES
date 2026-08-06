@@ -1420,10 +1420,91 @@ def choose_label_position(
     return best_x, page_height - best_top_y
 
 
+def qr_payload(metadata: dict[str, Any] | None) -> str:
+    data = metadata or {}
+    payload = {
+        "type": "cotas_inteligentes_plano",
+        "id": data.get("id", ""),
+        "client": data.get("client", ""),
+        "drawing_number": data.get("drawing_number", ""),
+        "part_number": data.get("part_number", ""),
+        "revision": data.get("revision", ""),
+        "order_number": data.get("order_number", ""),
+        "created_at": data.get("created_at", ""),
+    }
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def choose_qr_position(
+    page_width: float,
+    page_height: float,
+    qr_size: float,
+    text_boxes: list[PdfBBox],
+    graphic_boxes: list[PdfBBox],
+    label_boxes: list[PdfBBox],
+) -> tuple[float, float]:
+    margin = 18.0
+    options = [
+        (margin, page_height - margin - qr_size),
+        (page_width - margin - qr_size, page_height - margin - qr_size),
+        (margin, margin),
+        (page_width - margin - qr_size, margin),
+        (page_width - margin - qr_size, page_height * 0.50 - qr_size / 2),
+        (margin, page_height * 0.50 - qr_size / 2),
+    ]
+    best = options[0]
+    best_score = float("inf")
+    for x, y in options:
+        top_box = (x - 3, page_height - y - qr_size - 3, x + qr_size + 3, page_height - y + 3)
+        text_hits = sum(1 for box in text_boxes if boxes_intersect(top_box, box, padding=4.0))
+        graphic_hits = sum(1 for box in graphic_boxes if boxes_intersect(top_box, box, padding=3.0))
+        label_hits = sum(1 for box in label_boxes if boxes_intersect(top_box, box, padding=4.0))
+        score = text_hits * 1000 + label_hits * 800 + graphic_hits * 260 + (0 if x > page_width / 2 else 60)
+        if score < best_score:
+            best_score = score
+            best = (x, y)
+    return best
+
+
+def draw_plan_qr(
+    c: canvas.Canvas,
+    metadata: dict[str, Any] | None,
+    page_width: float,
+    page_height: float,
+    text_boxes: list[PdfBBox],
+    graphic_boxes: list[PdfBBox],
+    label_boxes: list[PdfBBox],
+) -> None:
+    from reportlab.graphics import renderPDF
+    from reportlab.graphics.barcode.qr import QrCodeWidget
+    from reportlab.graphics.shapes import Drawing
+
+    qr_size = 54.0
+    x, y = choose_qr_position(page_width, page_height, qr_size, text_boxes, graphic_boxes, label_boxes)
+    c.setFillColor(white)
+    c.setStrokeColor(HexColor("#dc2626"))
+    c.setLineWidth(0.5)
+    c.rect(x - 4, y - 4, qr_size + 8, qr_size + 16, fill=1, stroke=1)
+    qr = QrCodeWidget(qr_payload(metadata))
+    bounds = qr.getBounds()
+    qr_width = bounds[2] - bounds[0]
+    qr_height = bounds[3] - bounds[1]
+    drawing = Drawing(qr_size, qr_size, transform=[qr_size / qr_width, 0, 0, qr_size / qr_height, 0, 0])
+    drawing.add(qr)
+    renderPDF.draw(drawing, c, x, y + 8)
+    drawing_number = str((metadata or {}).get("drawing_number", "") or "PLANO").strip()
+    c.setFont("Helvetica-Bold", 5.4)
+    c.setFillColor(HexColor("#dc2626"))
+    label = f"QR {drawing_number}"[:24]
+    label_width = c.stringWidth(label, "Helvetica-Bold", 5.4)
+    c.drawString(x + (qr_size - label_width) / 2, y + 1.2, label)
+
+
 def draw_numbered_overlay(
     original_pdf: Path,
     candidates: list[DimensionCandidate],
     output_pdf: Path,
+    metadata: dict[str, Any] | None = None,
 ) -> None:
     reader = PdfReader(str(original_pdf))
     writer = PdfWriter()
@@ -1493,6 +1574,17 @@ def draw_numbered_overlay(
             label_edge_x = pdf_x + (vec_x / vec_len) * label_half_width
             label_edge_y = pdf_y + (vec_y / vec_len) * label_half_height
             c.line(line_start_x, line_start_y, label_edge_x, label_edge_y)
+
+        if page_index == 1:
+            draw_plan_qr(
+                c,
+                metadata,
+                width,
+                height,
+                occupied_by_page.get(page_index, []),
+                graphics_by_page.get(page_index, []),
+                placed_label_boxes,
+            )
 
         c.save()
 
@@ -1710,6 +1802,7 @@ def init_history(db_path: Path) -> None:
                 part_number text,
                 drawing_number text,
                 revision text,
+                order_number text,
                 source_hash text not null,
                 original_pdf text not null,
                 numbered_pdf text not null,
@@ -1718,8 +1811,11 @@ def init_history(db_path: Path) -> None:
             )
             """
         )
+        columns = {row[1] for row in conn.execute("pragma table_info(jobs)")}
+        if "order_number" not in columns:
+            conn.execute("alter table jobs add column order_number text")
         conn.execute(
-            "create index if not exists idx_jobs_lookup on jobs(client, part_number, drawing_number, revision)"
+            "create index if not exists idx_jobs_lookup_order on jobs(client, part_number, drawing_number, revision, order_number)"
         )
 
 
@@ -1728,9 +1824,9 @@ def save_history(db_path: Path, job: dict[str, Any]) -> None:
         conn.execute(
             """
             insert or replace into jobs (
-                id, client, part_number, drawing_number, revision, source_hash,
+                id, client, part_number, drawing_number, revision, order_number, source_hash,
                 original_pdf, numbered_pdf, candidates_json, created_at
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job["id"],
@@ -1738,6 +1834,7 @@ def save_history(db_path: Path, job: dict[str, Any]) -> None:
                 job.get("part_number"),
                 job.get("drawing_number"),
                 job.get("revision"),
+                job.get("order_number"),
                 job["source_hash"],
                 job["original_pdf"],
                 job["numbered_pdf"],
@@ -1756,7 +1853,7 @@ def analyze_command(args: argparse.Namespace) -> None:
     source_hash = sha256_file(input_pdf)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     identity = "-".join(
-        part for part in [args.client, args.part_number, args.drawing_number, args.revision] if part
+        part for part in [args.client, args.part_number, args.drawing_number, args.revision, args.order_number] if part
     )
     safe_identity = re.sub(r"[^A-Za-z0-9_.-]+", "-", identity).strip("-") or "plano"
     job_id = f"{safe_identity}-{stamp}-{source_hash[:8]}"
@@ -1777,11 +1874,7 @@ def analyze_command(args: argparse.Namespace) -> None:
         if ocr_candidates:
             candidates = ocr_candidates
             used_ocr = True
-    draw_numbered_overlay(original_pdf, candidates, numbered_pdf)
-
-    candidates_payload = [asdict(candidate) for candidate in candidates]
-    candidates_json.write_text(json.dumps(candidates_payload, indent=2), encoding="utf-8")
-
+    created_at = datetime.now(timezone.utc).isoformat()
     job = {
         "id": job_id,
         "used_ocr": used_ocr,
@@ -1789,14 +1882,20 @@ def analyze_command(args: argparse.Namespace) -> None:
         "part_number": args.part_number,
         "drawing_number": args.drawing_number,
         "revision": args.revision,
+        "order_number": args.order_number,
         "source_hash": source_hash,
         "original_pdf": str(original_pdf),
         "numbered_pdf": str(numbered_pdf),
         "candidates_json": str(candidates_json),
         "tolerances_xlsx": str(tolerances_xlsx),
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": created_at,
         "candidate_count": len(candidates),
     }
+    draw_numbered_overlay(original_pdf, candidates, numbered_pdf, job)
+
+    candidates_payload = [asdict(candidate) for candidate in candidates]
+    candidates_json.write_text(json.dumps(candidates_payload, indent=2), encoding="utf-8")
+
     generate_tolerance_workbook(candidates, tolerances_xlsx, job)
     job_json.write_text(json.dumps(job, indent=2), encoding="utf-8")
 
@@ -1815,6 +1914,7 @@ def search_command(args: argparse.Namespace) -> None:
         "part_number": args.part_number,
         "drawing_number": args.drawing_number,
         "revision": args.revision,
+        "order_number": args.order_number,
     }
     clauses = []
     values = []
@@ -1861,6 +1961,7 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--part-number", default="")
     analyze.add_argument("--drawing-number", default="")
     analyze.add_argument("--revision", default="")
+    analyze.add_argument("--order-number", default="")
     analyze.add_argument(
         "--include-tables",
         action="store_true",
@@ -1873,6 +1974,7 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--part-number", default="")
     search.add_argument("--drawing-number", default="")
     search.add_argument("--revision", default="")
+    search.add_argument("--order-number", default="")
     search.add_argument("--limit", type=int, default=20)
     search.set_defaults(func=search_command)
 

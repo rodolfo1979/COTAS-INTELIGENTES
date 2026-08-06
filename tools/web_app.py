@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 STORAGE = ROOT / "storage"
 UPLOADS = STORAGE / "uploads"
 CLIENTS_FILE = ROOT / "data" / "clients.json"
-ENGINE_VERSION = "2026-08-06-rowwise-numbering"
+ENGINE_VERSION = "2026-08-06-pdf-qr-order"
 AUTH_USER = os.getenv("COTAS_ADMIN_USER", "admin")
 AUTH_PASSWORD = os.getenv("COTAS_ADMIN_PASSWORD", "")
 AUTH_SECRET = os.getenv("COTAS_SECRET_KEY", "")
@@ -198,6 +198,8 @@ def run_engine(input_pdf: Path, fields: dict[str, str]) -> dict:
             fields.get("drawing_number", ""),
             "--revision",
             fields.get("revision", ""),
+            "--order-number",
+            fields.get("order_number", ""),
         ]
     )
     analyze_command(args)
@@ -217,6 +219,8 @@ def run_engine(input_pdf: Path, fields: dict[str, str]) -> dict:
             fields.get("drawing_number", ""),
             "--revision",
             fields.get("revision", ""),
+            "--order-number",
+            fields.get("order_number", ""),
             "--limit",
             "1",
         ]
@@ -230,7 +234,7 @@ def run_engine(input_pdf: Path, fields: dict[str, str]) -> dict:
         row = conn.execute(
             """
             select * from jobs
-            where client = ? and part_number = ? and drawing_number = ? and revision = ?
+            where client = ? and part_number = ? and drawing_number = ? and revision = ? and order_number = ?
             order by created_at desc limit 1
             """,
             (
@@ -238,6 +242,7 @@ def run_engine(input_pdf: Path, fields: dict[str, str]) -> dict:
                 fields.get("part_number", ""),
                 fields.get("drawing_number", ""),
                 fields.get("revision", ""),
+                fields.get("order_number", ""),
             ),
         ).fetchone()
     if not row:
@@ -423,13 +428,14 @@ class App(BaseHTTPRequestHandler):
     <div><label>Numero de parte</label><input name="part_number"></div>
     <div><label>Numero de plano</label><input name="drawing_number" required></div>
     <div><label>Revision</label><input name="revision" value="A"></div>
+    <div><label>Numero de orden</label><input name="order_number"></div>
     <div class="wide"><label>PDF del plano</label><input type="file" name="pdf" accept="application/pdf" required></div>
   </div>
   <div class="actions"><button type="submit">Analizar y numerar</button><span class="muted">El sistema guardara original, numerado e historial.</span></div>
 </form>
 <section>
   <h2>Como trabaja esta version</h2>
-  <p class="muted">El cliente se puede buscar en la lista o escribir manualmente si no existe. Solo cliente y numero de plano son obligatorios; numero de parte y revision quedan como datos opcionales.</p>
+  <p class="muted">El cliente se puede buscar en la lista o escribir manualmente si no existe. Solo cliente y numero de plano son obligatorios; numero de parte, revision y numero de orden quedan como datos opcionales.</p>
   <p class="muted">Detecta textos que parecen cotas en PDFs vectoriales y excluye automaticamente numeros dentro de tablas o cajetines. Si el plano viene escaneado como imagen, intenta usar OCR automatico.</p>
 </section>
 <script>
@@ -484,7 +490,7 @@ class App(BaseHTTPRequestHandler):
         import sqlite3
 
         params = parse_qs(query)
-        q = {key: params.get(key, [""])[0] for key in ["client", "part_number", "drawing_number", "revision"]}
+        q = {key: params.get(key, [""])[0] for key in ["client", "part_number", "drawing_number", "revision", "order_number"]}
         db_path = STORAGE / "history.sqlite"
         init_history(db_path)
 
@@ -511,6 +517,7 @@ class App(BaseHTTPRequestHandler):
     <div><label>Parte</label><input name="part_number" value="{esc(q['part_number'])}"></div>
     <div><label>Plano</label><input name="drawing_number" value="{esc(q['drawing_number'])}"></div>
     <div><label>Revision</label><input name="revision" value="{esc(q['revision'])}"></div>
+    <div><label>Orden</label><input name="order_number" value="{esc(q['order_number'])}"></div>
   </div>
   <div class="actions"><button type="submit" class="secondary">Buscar</button></div>
 </form>
@@ -522,17 +529,18 @@ class App(BaseHTTPRequestHandler):
   <td>{esc(row['part_number'])}</td>
   <td>{esc(row['drawing_number'])}</td>
   <td>{esc(row['revision'])}</td>
+  <td>{esc(row.get('order_number', ''))}</td>
   <td>{esc(display_date(row['created_at']))}</td>
 </tr>"""
             for row in rows
         )
         if not table_rows:
-            table_rows = '<tr><td colspan="6" class="muted">No hay registros todavia.</td></tr>'
+            table_rows = '<tr><td colspan="7" class="muted">No hay registros todavia.</td></tr>'
         body = filters + f"""
 <section>
   <h2>Trabajos guardados</h2>
   <table>
-    <thead><tr><th>ID</th><th>Cliente</th><th>Parte</th><th>Plano</th><th>Revision</th><th>Fecha</th></tr></thead>
+    <thead><tr><th>ID</th><th>Cliente</th><th>Parte</th><th>Plano</th><th>Revision</th><th>Orden</th><th>Fecha</th></tr></thead>
     <tbody>{table_rows}</tbody>
   </table>
 </section>
@@ -582,6 +590,7 @@ class App(BaseHTTPRequestHandler):
   <td>{esc(job.get('client'))}</td>
   <td>{esc(job.get('part_number'))}</td>
   <td>{esc(job.get('revision'))}</td>
+  <td>{esc(job.get('order_number', ''))}</td>
   <td>{self.candidate_count(job)}</td>
   <td>{esc(display_date(job.get('created_at')))}</td>
   <td>
@@ -593,7 +602,7 @@ class App(BaseHTTPRequestHandler):
             for job in page_jobs
         )
         if not rows:
-            rows = '<tr><td colspan="7" class="muted">No hay planos cargados.</td></tr>'
+            rows = '<tr><td colspan="8" class="muted">No hay planos cargados.</td></tr>'
 
         page_links = []
         previous_class = "page-link" if current_page > 1 else "page-link disabled"
@@ -635,7 +644,7 @@ class App(BaseHTTPRequestHandler):
 <section>
   <h2>Historial administrativo</h2>
   <table>
-    <thead><tr><th>Plano</th><th>Cliente</th><th>Parte</th><th>Revision</th><th>Cotas</th><th>Fecha</th><th>Accion</th></tr></thead>
+    <thead><tr><th>Plano</th><th>Cliente</th><th>Parte</th><th>Revision</th><th>Orden</th><th>Cotas</th><th>Fecha</th><th>Accion</th></tr></thead>
     <tbody>{rows}</tbody>
   </table>
   {pager}
@@ -796,7 +805,7 @@ class App(BaseHTTPRequestHandler):
             json.dumps([candidate.__dict__ for candidate in candidates], indent=2),
             encoding="utf-8",
         )
-        draw_numbered_overlay(Path(job["original_pdf"]), candidates, Path(job["numbered_pdf"]))
+        draw_numbered_overlay(Path(job["original_pdf"]), candidates, Path(job["numbered_pdf"]), job)
         generate_tolerance_workbook(candidates, Path(job["numbered_pdf"]).with_name("tolerancias.xlsx"), job)
         self.redirect(f"/job/{quote(job_id)}")
 
@@ -864,6 +873,7 @@ class App(BaseHTTPRequestHandler):
             "part_number": form.getfirst("part_number", "").strip(),
             "drawing_number": form.getfirst("drawing_number", "").strip(),
             "revision": form.getfirst("revision", "").strip(),
+            "order_number": form.getfirst("order_number", "").strip(),
         }
         if not fields["client"] or not fields["drawing_number"]:
             self.send_html(
