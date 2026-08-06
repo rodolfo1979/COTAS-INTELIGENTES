@@ -1486,7 +1486,9 @@ def generate_tolerance_workbook(
     metadata = job or {}
     dark_fill = PatternFill("solid", fgColor="111827")
     thin = Side(style="thin", color="000000")
+    orange = Side(style="medium", color="F97316")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    check_border = Border(left=orange, right=orange, top=orange, bottom=orange)
 
     ws.merge_cells("A1:B5")
     logo_path = Path(__file__).resolve().parents[1] / "assets" / "smart-tool-logo.png"
@@ -1528,7 +1530,6 @@ def generate_tolerance_workbook(
         "ITEM",
         "NOMINAL",
         "INSTRUMENT",
-        "Decimal",
         "Tol +",
         "Tol -",
         "PIEZA 1",
@@ -1550,17 +1551,17 @@ def generate_tolerance_workbook(
     tolerance_candidates = [
         candidate
         for candidate in sorted(candidates, key=lambda item: (item.page, item.number))
-        if not is_thread_callout(candidate.text) and not is_date_like_text(candidate.text)
+        if not is_date_like_text(candidate.text)
     ]
     for row, candidate in enumerate(tolerance_candidates, start=header_row + 1):
         info = tolerance_info(candidate.text)
+        is_thread = is_thread_callout(candidate.text)
         values = [
             candidate.number,
             candidate.text,
             "",
-            info["decimals"],
-            info["tol_plus"],
-            info["tol_minus"],
+            "" if is_thread else info["tol_plus"],
+            "" if is_thread else info["tol_minus"],
             "",
             "",
             "",
@@ -1572,20 +1573,55 @@ def generate_tolerance_workbook(
         for col, value in enumerate(values, start=1):
             cell = ws.cell(row=row, column=col, value=value)
             cell.border = border
-            if col in {5, 6} and value is not None:
+            if col in {4, 5} and value not in {None, ""}:
                 cell.number_format = "0.0000"
-            if col in {1, 4, 5, 6} or col >= 7:
+            if col in {1, 4, 5} or col >= 6:
                 cell.alignment = Alignment(horizontal="center")
             if col == 2:
                 cell.alignment = Alignment(horizontal="left")
 
-    widths = [8, 16, 16, 10, 12, 12, 14, 14, 14, 14, 14, 14, 14]
+    widths = [8, 18, 16, 12, 12, 14, 14, 14, 14, 14, 14, 14]
     for index, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(index)].width = width
     for row in range(header_row + 1, header_row + len(tolerance_candidates) + 1):
         ws.row_dimensions[row].height = 20
     ws.freeze_panes = "A8"
-    ws.auto_filter.ref = f"A{header_row}:M{max(header_row + 1, header_row + len(tolerance_candidates))}"
+    last_data_row = max(header_row + 1, header_row + len(tolerance_candidates))
+    ws.auto_filter.ref = f"A{header_row}:L{last_data_row}"
+
+    footer_row = last_data_row + 1
+    for col in range(1, 13):
+        ws.cell(row=footer_row, column=col).border = border
+        ws.cell(row=footer_row + 1, column=col).border = border
+        ws.cell(row=footer_row + 2, column=col).border = border
+
+    ws.merge_cells(start_row=footer_row, start_column=1, end_row=footer_row, end_column=4)
+    ws.cell(row=footer_row, column=1, value="Realizado por:").font = Font(bold=True)
+    ws.merge_cells(start_row=footer_row, start_column=5, end_row=footer_row, end_column=6)
+    ws.cell(row=footer_row, column=5, value="Fecha:").font = Font(bold=True)
+    ws.merge_cells(start_row=footer_row, start_column=7, end_row=footer_row, end_column=8)
+    ws.cell(row=footer_row, column=7, value="Piezas Marcadas:")
+    ws.cell(row=footer_row, column=9).border = check_border
+    ws.merge_cells(start_row=footer_row, start_column=10, end_row=footer_row, end_column=11)
+    ws.cell(row=footer_row, column=10, value="Flash Chroming:")
+    ws.cell(row=footer_row, column=12).border = check_border
+
+    ws.merge_cells(start_row=footer_row + 1, start_column=7, end_row=footer_row + 1, end_column=8)
+    ws.cell(row=footer_row + 1, column=7, value="Material OK:")
+    ws.cell(row=footer_row + 1, column=9).border = check_border
+    ws.merge_cells(start_row=footer_row + 1, start_column=10, end_row=footer_row + 1, end_column=11)
+    ws.cell(row=footer_row + 1, column=10, value="Heat Treatment:")
+    ws.cell(row=footer_row + 1, column=12).border = check_border
+
+    ws.merge_cells(start_row=footer_row + 2, start_column=1, end_row=footer_row + 2, end_column=6)
+    ws.cell(row=footer_row + 2, column=1, value="Detalles de Inspeccion:").font = Font(bold=True)
+    ws.merge_cells(start_row=footer_row + 2, start_column=7, end_row=footer_row + 2, end_column=8)
+    ws.cell(row=footer_row + 2, column=7, value="Anodized:")
+    ws.cell(row=footer_row + 2, column=9).border = check_border
+
+    for row in range(footer_row, footer_row + 3):
+        for col in range(1, 13):
+            ws.cell(row=row, column=col).alignment = Alignment(vertical="center")
 
     rules = wb.create_sheet("Reglas")
     rules["A1"] = "Reglas de tolerancia general"
@@ -1595,7 +1631,7 @@ def generate_tolerance_workbook(
     rules.append([3, 0.005])
     rules.append([4, 0.001])
     rules.append(["Prioridad", "Si la cota trae tolerancia explicita, se usa esa tolerancia antes de la regla general."])
-    rules.append(["Roscas", "No se incluyen llamadas tipo 4-40 UNC, 6-32 UNC, etc."])
+    rules.append(["Roscas", "Se incluyen llamadas tipo 4-40 UNC, 6-32 UNC, etc.; no se les asigna tolerancia."])
     rules.append(["Radios", "Las cotas tipo R.063 se calculan usando el valor despues de R."])
     rules.append(["Fechas", "No se incluyen textos con formato de fecha como 10/22/2025."])
     for col in range(1, 3):
