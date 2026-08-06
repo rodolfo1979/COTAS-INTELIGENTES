@@ -655,7 +655,10 @@ def visual_order_candidates(items: list[dict[str, Any]]) -> list[dict[str, Any]]
         )
         heights = sorted(float(item.get("height", 0)) for item in page_items if float(item.get("height", 0)) > 0)
         median_height = heights[len(heights) // 2] if heights else 8.0
-        band_tolerance = max(120.0, median_height * 12.0)
+        # Number plans the way a machinist scans them: top-to-bottom bands,
+        # then left-to-right inside each band. A wide band made lower left
+        # dimensions jump ahead of upper dimensions, so keep it tight.
+        band_tolerance = min(48.0, max(28.0, median_height * 4.5))
         bands: list[dict[str, Any]] = []
         for item in page_items:
             center_y = float(item["y"]) + float(item.get("height", 0)) / 2
@@ -1298,9 +1301,9 @@ def choose_label_position(
     # dimension value, either to its left or right.
     is_rotated_dimension = "rotated" in candidate.reason
     if is_rotated_dimension:
-        for gap in [8, 12, 18, 26, 36]:
-            candidate_points.append((center_x, candidate.y - gap, gap, "rotated_axis"))
-            candidate_points.append((center_x, candidate.y + candidate.height + gap, gap, "rotated_axis"))
+        for gap in [7, 10, 14, 20, 28, 38]:
+            candidate_points.append((center_x, candidate.y - gap, gap, "rotated_axis_above"))
+            candidate_points.append((center_x, candidate.y + candidate.height + gap, gap, "rotated_axis_below"))
 
     min_horizontal_gap = 18 if is_rotated_dimension else 12
     for gap in [10, 14, 18, 24, 32, 42, 56]:
@@ -1399,11 +1402,13 @@ def choose_label_position(
                     horizontal_bonus -= 2500
             elif horizontal and text_hits == 0 and label_hits == 0 and leader_text_hits == 0:
                 horizontal_bonus = -2600
-            axis_aligned = placement_mode == "rotated_axis" and abs(x - center_x) <= 2.5
+            axis_aligned = placement_mode.startswith("rotated_axis") and abs(x - center_x) <= 2.5
             if axis_aligned and text_hits == 0 and label_hits == 0 and leader_text_hits == 0 and leader_label_hits == 0:
-                horizontal_bonus -= 18000
+                horizontal_bonus -= 24000
             elif axis_aligned and text_hits == 0 and label_hits == 0:
-                horizontal_bonus -= 5000
+                horizontal_bonus -= 7000
+            if placement_mode == "rotated_axis_above" and text_hits == 0 and label_hits == 0:
+                horizontal_bonus -= 30000
 
             distance_weight = 18 if placement_mode == "horizontal" else 16
 
@@ -1456,7 +1461,7 @@ def draw_numbered_overlay(
         placed_label_boxes: list[PdfBBox] = []
 
         for candidate in by_page.get(page_index, []):
-            font_size = 7.0 if candidate.number < 100 else 6.4
+            font_size = 7.7 if candidate.number < 100 else 7.0
             label = str(candidate.number)
             c.setFont("Helvetica-Bold", font_size)
             text_width = c.stringWidth(label, "Helvetica-Bold", font_size)
