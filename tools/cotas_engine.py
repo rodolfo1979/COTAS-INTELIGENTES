@@ -49,6 +49,21 @@ NOT_DIMENSION_RE = re.compile(
 NON_DIMENSION_LINE_RE = re.compile(
     r"(?i)\b(?:rev|revision|sheet|page|date|scale|material|qty|cantidad|cliente|client)\b"
 )
+GENERAL_TOLERANCE_LINE_RE = re.compile(
+    r"(?i)\b(?:"
+    r"unless\s+otherwise\s+specified|"
+    r"tolerances?|"
+    r"dimensions?\s+are\s+in|"
+    r"angles?|"
+    r"surface\s+finish|"
+    r"break\s+sharp\s+corners?|"
+    r"max\s+surface\s+finish|"
+    r"third\s+angle\s+projection"
+    r")\b"
+)
+GENERAL_TOLERANCE_NOTATION_RE = re.compile(
+    r"(?i)(?:\.[Xx]{1,4}|(?<!\d)[Xx]{2,4})\s*(?:\+/-|[+]\s*/\s*-|[Â±±]|[+]\s*[-])\s*\.?\d+"
+)
 
 
 @dataclass
@@ -247,6 +262,10 @@ def looks_like_dimension(
 
     if line_text and NON_DIMENSION_LINE_RE.search(line_text) and not has_strong_marker:
         return False, 0.0, "ignored title block or note line"
+    if line_text and GENERAL_TOLERANCE_LINE_RE.search(line_text):
+        return False, 0.0, "ignored general tolerance block"
+    if line_text and GENERAL_TOLERANCE_NOTATION_RE.search(line_text):
+        return False, 0.0, "ignored general tolerance notation"
 
     is_plain_number = bool(re.match(r"^[0-9]+(?:[.,][0-9]+)?$", compact))
     if is_plain_number and len(line_tokens) > 12 and not line_has_unit_nearby:
@@ -334,6 +353,43 @@ def detected_table_bboxes(page: pdfplumber.page.Page) -> list[PdfBBox]:
         bboxes.append((x0, top, x1, bottom))
 
     return bboxes
+
+
+def detected_general_tolerance_bboxes(words: list[dict[str, Any]], page_width: float, page_height: float) -> list[PdfBBox]:
+    boxes: list[PdfBBox] = []
+    if not words:
+        return boxes
+
+    lines: list[list[dict[str, Any]]] = []
+    for word in sorted(words, key=lambda item: (float(item.get("top", 0)), float(item.get("x0", 0)))):
+        if not lines or abs(float(lines[-1][0].get("top", 0)) - float(word.get("top", 0))) >= 4:
+            lines.append([word])
+        else:
+            lines[-1].append(word)
+
+    for index, line_words in enumerate(lines):
+        line_text = normalize_text(" ".join(str(word.get("text", "")) for word in line_words))
+        if not GENERAL_TOLERANCE_LINE_RE.search(line_text):
+            continue
+
+        block_words = list(line_words)
+        for extra_line in lines[index + 1 : index + 8]:
+            if not extra_line:
+                continue
+            first_top = float(extra_line[0].get("top", 0))
+            if first_top > page_height * 0.97:
+                break
+            block_words.extend(extra_line)
+
+        union = union_pdf_words(block_words)
+        x0 = max(0.0, union["x"] - 10)
+        top = max(0.0, union["y"] - 6)
+        x1 = min(page_width, union["x"] + union["width"] + 10)
+        bottom = min(page_height, union["y"] + union["height"] + 6)
+        if bottom >= page_height * 0.55 or x0 <= page_width * 0.35:
+            boxes.append((x0, top, x1, bottom))
+
+    return boxes
 
 
 def nearby_line_words(words: list[dict[str, Any]], word: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1023,19 +1079,25 @@ def extract_candidates(pdf_path: Path, include_tables: bool = False) -> list[Dim
                 use_text_flow=False,
                 extra_attrs=[],
             )
+            general_tolerance_bboxes = [] if include_tables else detected_general_tolerance_bboxes(
+                all_words,
+                float(page.width),
+                float(page.height),
+            )
+            excluded_bboxes = [*table_bboxes, *general_tolerance_bboxes]
             raw_candidates.extend(
                 extract_rotated_word_candidates(
                     all_words,
                     page_index,
                     float(page.width),
                     float(page.height),
-                    table_bboxes,
+                    excluded_bboxes,
                 )
             )
             words = [
                 word
                 for word in all_words
-                if bool(word.get("upright", True)) and not word_inside_any_bbox(word, table_bboxes)
+                if bool(word.get("upright", True)) and not word_inside_any_bbox(word, excluded_bboxes)
             ]
             lines: list[list[dict[str, Any]]] = []
             for word in sorted(words, key=lambda item: (float(item.get("top", 0)), float(item.get("x0", 0)))):
