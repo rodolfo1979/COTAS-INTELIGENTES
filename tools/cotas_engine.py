@@ -653,10 +653,10 @@ def visual_order_candidates(items: list[dict[str, Any]]) -> list[dict[str, Any]]
                 float(item["x"]) + float(item.get("width", 0)) / 2,
             ),
         )
-        bands: list[dict[str, Any]] = []
         heights = sorted(float(item.get("height", 0)) for item in page_items if float(item.get("height", 0)) > 0)
         median_height = heights[len(heights) // 2] if heights else 8.0
-        band_tolerance = max(46.0, median_height * 5.5)
+        band_tolerance = max(120.0, median_height * 12.0)
+        bands: list[dict[str, Any]] = []
         for item in page_items:
             center_y = float(item["y"]) + float(item.get("height", 0)) / 2
             if not bands:
