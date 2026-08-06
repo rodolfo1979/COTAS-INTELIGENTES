@@ -217,6 +217,9 @@ def looks_like_dimension(
     text = normalize_text(raw_text)
     compact = re.sub(r"\s+", "", text)
 
+    if is_date_like_text(text):
+        return False, 0.0, "ignored date"
+
     if not compact or NOT_DIMENSION_RE.match(compact):
         return False, 0.0, "ignored label"
 
@@ -636,6 +639,48 @@ def remove_grouped_digit_artifacts(items: list[dict[str, Any]]) -> list[dict[str
     return cleaned
 
 
+def visual_order_candidates(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    ordered: list[dict[str, Any]] = []
+    by_page: dict[int, list[dict[str, Any]]] = {}
+    for item in items:
+        by_page.setdefault(int(item["page"]), []).append(item)
+
+    for page in sorted(by_page):
+        page_items = sorted(
+            by_page[page],
+            key=lambda item: (
+                float(item["y"]) + float(item.get("height", 0)) / 2,
+                float(item["x"]) + float(item.get("width", 0)) / 2,
+            ),
+        )
+        bands: list[list[dict[str, Any]]] = []
+        band_tolerance = 18.0
+        for item in page_items:
+            center_y = float(item["y"]) + float(item.get("height", 0)) / 2
+            if not bands:
+                bands.append([item])
+                continue
+
+            band_center = sum(float(entry["y"]) + float(entry.get("height", 0)) / 2 for entry in bands[-1]) / len(bands[-1])
+            if abs(center_y - band_center) <= band_tolerance:
+                bands[-1].append(item)
+            else:
+                bands.append([item])
+
+        for band in bands:
+            ordered.extend(
+                sorted(
+                    band,
+                    key=lambda item: (
+                        float(item["x"]) + float(item.get("width", 0)) / 2,
+                        float(item["y"]) + float(item.get("height", 0)) / 2,
+                    ),
+                )
+            )
+
+    return ordered
+
+
 def union_word_box(words: list[dict[str, Any]]) -> dict[str, float]:
     xs = [float(word["x"]) for word in words]
     ys = [float(word["y"]) for word in words]
@@ -948,8 +993,9 @@ def extract_ocr_candidates(pdf_path: Path) -> list[DimensionCandidate]:
 
     raw_candidates = merge_digit_fragments(raw_candidates)
     raw_candidates = remove_grouped_digit_artifacts(raw_candidates)
+    raw_candidates = [item for item in raw_candidates if not is_date_like_text(str(item.get("text", "")))]
     raw_candidates = dedupe_candidates(raw_candidates)
-    raw_candidates.sort(key=lambda item: (item["page"], item["y"], item["x"]))
+    raw_candidates = visual_order_candidates(raw_candidates)
     return [
         DimensionCandidate(number=index, **item)
         for index, item in enumerate(raw_candidates, start=1)
@@ -1045,8 +1091,9 @@ def extract_candidates(pdf_path: Path, include_tables: bool = False) -> list[Dim
 
     raw_candidates = merge_digit_fragments(raw_candidates)
     raw_candidates = remove_grouped_digit_artifacts(raw_candidates)
+    raw_candidates = [item for item in raw_candidates if not is_date_like_text(str(item.get("text", "")))]
     raw_candidates = dedupe_candidates(raw_candidates)
-    raw_candidates.sort(key=lambda item: (item["page"], item["y"], item["x"]))
+    raw_candidates = visual_order_candidates(raw_candidates)
     return [
         DimensionCandidate(number=index, **item)
         for index, item in enumerate(raw_candidates, start=1)
