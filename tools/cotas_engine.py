@@ -1254,6 +1254,49 @@ def page_graphic_bboxes(pdf_path: Path) -> dict[int, list[PdfBBox]]:
     return occupied
 
 
+def expanded_horizontal_source_box(candidate: DimensionCandidate, text_boxes: list[PdfBBox]) -> PdfBBox:
+    box = (
+        candidate.x,
+        candidate.y,
+        candidate.x + candidate.width,
+        candidate.y + candidate.height,
+    )
+    if "rotated" in candidate.reason:
+        return box
+
+    text = normalize_text(candidate.text).upper()
+    expands_as_multiline_callout = "THRU" in text or "90" in text
+    if not expands_as_multiline_callout:
+        return box
+
+    center_top_y = candidate.y + candidate.height / 2
+    same_line_boxes: list[PdfBBox] = []
+    for text_box in text_boxes:
+        x0, top, x1, bottom = text_box
+        text_center_y = (top + bottom) / 2
+        same_row = abs(text_center_y - center_top_y) <= max(6.0, candidate.height * 0.7)
+        close_x = x1 >= candidate.x - 36 and x0 <= candidate.x + candidate.width + 14
+        if same_row and close_x:
+            same_line_boxes.append(text_box)
+
+    left_symbol_guard = 16.0
+
+    if not same_line_boxes:
+        return (
+            max(0.0, box[0] - left_symbol_guard),
+            box[1],
+            box[2],
+            box[3],
+        )
+
+    return (
+        max(0.0, min(candidate.x, *(item[0] for item in same_line_boxes)) - left_symbol_guard),
+        min(candidate.y, *(item[1] for item in same_line_boxes)),
+        max(candidate.x + candidate.width, *(item[2] for item in same_line_boxes)),
+        max(candidate.y + candidate.height, *(item[3] for item in same_line_boxes)),
+    )
+
+
 def choose_label_position(
     candidate: DimensionCandidate,
     page_width: float,
@@ -1266,11 +1309,12 @@ def choose_label_position(
 ) -> tuple[float, float]:
     center_x = candidate.x + candidate.width / 2
     center_top_y = candidate.y + candidate.height / 2
+    expanded_box = expanded_horizontal_source_box(candidate, text_boxes)
     source_box = (
-        candidate.x - 3,
-        candidate.y - 3,
-        candidate.x + candidate.width + 3,
-        candidate.y + candidate.height + 3,
+        expanded_box[0] - 3,
+        expanded_box[1] - 3,
+        expanded_box[2] + 3,
+        expanded_box[3] + 3,
     )
     rings = [10, 14, 20, 28, 38, 50, 64]
     directions = [
@@ -1305,12 +1349,12 @@ def choose_label_position(
             candidate_points.append((center_x, candidate.y - gap, gap, "rotated_axis_above"))
             candidate_points.append((center_x, candidate.y + candidate.height + gap, gap, "rotated_axis_below"))
 
-    min_horizontal_gap = 18 if is_rotated_dimension else 12
-    for gap in [10, 14, 18, 24, 32, 42, 56]:
+    min_horizontal_gap = 18 if is_rotated_dimension else max(12.0, label_half_width + 6.0)
+    for gap in [7, 10, 14, 18, 24, 32, 42, 56]:
         if gap < min_horizontal_gap:
             continue
-        candidate_points.append((candidate.x - gap, center_top_y, gap, "horizontal"))
-        candidate_points.append((candidate.x + candidate.width + gap, center_top_y, gap, "horizontal"))
+        candidate_points.append((expanded_box[0] - gap, center_top_y, gap, "horizontal"))
+        candidate_points.append((expanded_box[2] + gap, center_top_y, gap, "horizontal"))
 
     label_text_boxes = text_boxes
     leader_text_boxes = [
@@ -1338,15 +1382,17 @@ def choose_label_position(
 
             text_overlap = sum(intersection_area(label_box, box, padding=3.0) for box in label_text_boxes)
             label_overlap = sum(intersection_area(label_box, box, padding=4.0) for box in placed_label_boxes)
+            source_overlap = intersection_area(label_box, source_box, padding=2.0)
             text_hits = sum(1 for box in label_text_boxes if boxes_intersect(label_box, box, padding=3.0))
             label_hits = sum(1 for box in placed_label_boxes if boxes_intersect(label_box, box, padding=4.0))
+            source_hit = boxes_intersect(label_box, source_box, padding=2.0)
             graphic_hits = sum(1 for box in graphic_boxes if boxes_intersect(label_box, box, padding=2.0))
 
             source_pdf_box = (
-                candidate.x,
-                candidate.y,
-                candidate.x + candidate.width,
-                candidate.y + candidate.height,
+                expanded_box[0],
+                expanded_box[1],
+                expanded_box[2],
+                expanded_box[3],
             )
             line_start_x, line_start_pdf_y = line_start_outside_source_box(
                 source_pdf_box,
@@ -1387,6 +1433,7 @@ def choose_label_position(
             horizontal = placement_mode == "horizontal" and abs(top_y - center_top_y) <= 2.5
             clean_horizontal = (
                 horizontal
+                and not source_hit
                 and text_hits == 0
                 and label_hits == 0
                 and leader_text_hits == 0
@@ -1397,11 +1444,11 @@ def choose_label_position(
             )
             horizontal_bonus = 0
             if clean_horizontal:
-                horizontal_bonus = -14000
+                horizontal_bonus = -28000
                 if is_rotated_dimension:
                     horizontal_bonus -= 2500
-            elif horizontal and text_hits == 0 and label_hits == 0 and leader_text_hits == 0:
-                horizontal_bonus = -2600
+            elif horizontal and not source_hit and text_hits == 0 and label_hits == 0 and leader_text_hits == 0:
+                horizontal_bonus = -12000
             axis_aligned = placement_mode.startswith("rotated_axis") and abs(x - center_x) <= 2.5
             if axis_aligned and text_hits == 0 and label_hits == 0 and leader_text_hits == 0 and leader_label_hits == 0:
                 horizontal_bonus -= 24000
@@ -1415,9 +1462,11 @@ def choose_label_position(
             score = (
                 text_hits * 25000
                 + label_hits * 40000
+                + (100000 if source_hit else 0)
                 + graphic_hits * 6500
                 + text_overlap * 200
                 + label_overlap * 300
+                + source_overlap * 500
                 + leader_text_hits * 4500
                 + leader_label_hits * 4500
                 + leader_graphic_hits * 1200
@@ -1495,12 +1544,7 @@ def draw_numbered_overlay(
             c.drawString(pdf_x - text_width / 2, pdf_y - 2.2, label)
 
             c.setStrokeColor(HexColor("#dc2626"))
-            source_box = (
-                candidate.x,
-                candidate.y,
-                candidate.x + candidate.width,
-                candidate.y + candidate.height,
-            )
+            source_box = expanded_horizontal_source_box(candidate, occupied_by_page.get(page_index, []))
             line_start_x, line_start_y = line_start_outside_source_box(source_box, (pdf_x, pdf_y), height)
             vec_x = line_start_x - pdf_x
             vec_y = line_start_y - pdf_y
