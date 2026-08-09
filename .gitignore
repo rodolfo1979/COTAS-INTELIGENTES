@@ -14,6 +14,7 @@ storage/**/*.png
 storage/**/*.json
 storage/**/*.xlsx
 storage/test*_images/
+runtime_storage/
 
 data/clients.json
 

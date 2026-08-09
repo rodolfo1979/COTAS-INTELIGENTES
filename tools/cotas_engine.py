@@ -79,6 +79,47 @@ class DimensionCandidate:
     reason: str
 
 
+@dataclass(frozen=True)
+class AnalysisProfile:
+    name: str
+    include_tables: bool = False
+    use_rotated: bool = True
+    use_stacked: bool = True
+    use_ocr: bool = False
+    min_confidence: float = 0.0
+    allow_plain_numbers: bool = True
+    exclude_title_block: bool = True
+    description: str = ""
+
+
+ANALYSIS_PROFILES: dict[str, AnalysisProfile] = {
+    "standard": AnalysisProfile(
+        name="standard",
+        description="PDF vectorial normal; excluye tablas, cajetines y notas.",
+    ),
+    "conservative": AnalysisProfile(
+        name="conservative",
+        min_confidence=0.74,
+        allow_plain_numbers=False,
+        description="Mas estricto; prioriza cotas con marcas tecnicas, unidades o tolerancias.",
+    ),
+    "permissive": AnalysisProfile(
+        name="permissive",
+        include_tables=True,
+        min_confidence=0.55,
+        exclude_title_block=False,
+        description="Mas amplio para planos con formatos no estandar o cotas en zonas tipo tabla.",
+    ),
+    "ocr": AnalysisProfile(
+        name="ocr",
+        use_ocr=True,
+        description="Fuerza OCR para planos escaneados como imagen.",
+    ),
+}
+
+DEFAULT_ANALYSIS_STRATEGY = "auto"
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -384,6 +425,20 @@ def detected_general_tolerance_bboxes(words: list[dict[str, Any]], page_width: f
     if not words:
         return boxes
 
+    def split_horizontal_clusters(line_words: list[dict[str, Any]], gap_limit: float = 42.0) -> list[list[dict[str, Any]]]:
+        clusters: list[list[dict[str, Any]]] = []
+        for word in sorted(line_words, key=lambda item: float(item.get("x0", 0))):
+            if not clusters:
+                clusters.append([word])
+                continue
+            previous = clusters[-1][-1]
+            gap = float(word.get("x0", 0)) - float(previous.get("x1", 0))
+            if gap > gap_limit:
+                clusters.append([word])
+            else:
+                clusters[-1].append(word)
+        return clusters
+
     lines: list[list[dict[str, Any]]] = []
     for word in sorted(words, key=lambda item: (float(item.get("top", 0)), float(item.get("x0", 0)))):
         if not lines or abs(float(lines[-1][0].get("top", 0)) - float(word.get("top", 0))) >= 4:
@@ -392,37 +447,49 @@ def detected_general_tolerance_bboxes(words: list[dict[str, Any]], page_width: f
             lines[-1].append(word)
 
     for index, line_words in enumerate(lines):
-        line_text = normalize_text(" ".join(str(word.get("text", "")) for word in line_words))
-        if not GENERAL_TOLERANCE_LINE_RE.search(line_text):
+        trigger_clusters = []
+        for cluster in split_horizontal_clusters(line_words):
+            cluster_text = normalize_text(" ".join(str(word.get("text", "")) for word in cluster))
+            if GENERAL_TOLERANCE_LINE_RE.search(cluster_text):
+                trigger_clusters.append(cluster)
+        if not trigger_clusters:
             continue
 
-        line_box = union_pdf_words(line_words)
-        line_is_title_block_context = (
-            line_box["y"] >= page_height * 0.58
-            or line_box["x"] <= page_width * 0.08
-            or "UNLESS OTHERWISE SPECIFIED" in line_text.upper()
-            or "DIMENSIONS ARE IN" in line_text.upper()
-            or "TOLERANCES UNLESS" in line_text.upper()
-        )
-        if not line_is_title_block_context:
-            continue
-
-        block_words = list(line_words)
-        for extra_line in lines[index + 1 : index + 8]:
-            if not extra_line:
+        for trigger_words in trigger_clusters:
+            line_text = normalize_text(" ".join(str(word.get("text", "")) for word in trigger_words))
+            line_box = union_pdf_words(trigger_words)
+            line_is_title_block_context = (
+                line_box["y"] >= page_height * 0.58
+                or line_box["x"] <= page_width * 0.08
+                or "UNLESS OTHERWISE SPECIFIED" in line_text.upper()
+                or "DIMENSIONS ARE IN" in line_text.upper()
+                or "TOLERANCES UNLESS" in line_text.upper()
+            )
+            if not line_is_title_block_context:
                 continue
-            first_top = float(extra_line[0].get("top", 0))
-            if first_top > page_height * 0.97:
-                break
-            block_words.extend(extra_line)
 
-        union = union_pdf_words(block_words)
-        x0 = max(0.0, union["x"] - 10)
-        top = max(0.0, union["y"] - 6)
-        x1 = min(page_width, union["x"] + union["width"] + 10)
-        bottom = min(page_height, union["y"] + union["height"] + 6)
-        if bottom >= page_height * 0.55 or x0 <= page_width * 0.35:
-            boxes.append((x0, top, x1, bottom))
+            block_words = list(trigger_words)
+            left_limit = max(0.0, line_box["x"] - 35.0)
+            right_limit = min(page_width, line_box["x"] + line_box["width"] + 140.0)
+            for extra_line in lines[index + 1 : index + 8]:
+                if not extra_line:
+                    continue
+                first_top = float(extra_line[0].get("top", 0))
+                if first_top > page_height * 0.97:
+                    break
+                for cluster in split_horizontal_clusters(extra_line):
+                    cluster_box = union_pdf_words(cluster)
+                    cluster_center_x = cluster_box["x"] + cluster_box["width"] / 2
+                    if left_limit <= cluster_center_x <= right_limit:
+                        block_words.extend(cluster)
+
+            union = union_pdf_words(block_words)
+            x0 = max(0.0, union["x"] - 10)
+            top = max(0.0, union["y"] - 6)
+            x1 = min(page_width, union["x"] + union["width"] + 10)
+            bottom = min(page_height, union["y"] + union["height"] + 6)
+            if bottom >= page_height * 0.55 or x0 <= page_width * 0.35:
+                boxes.append((x0, top, x1, bottom))
 
     return boxes
 
@@ -859,6 +926,66 @@ def remove_grouped_digit_artifacts(items: list[dict[str, Any]]) -> list[dict[str
     return cleaned
 
 
+def filter_candidates_for_profile(items: list[dict[str, Any]], profile: AnalysisProfile) -> list[dict[str, Any]]:
+    filtered: list[dict[str, Any]] = []
+    for item in items:
+        confidence = float(item.get("confidence", 0))
+        if confidence < profile.min_confidence:
+            continue
+        reason = str(item.get("reason", ""))
+        text = normalize_text(str(item.get("text", ""))).strip()
+        compact = re.sub(r"\s+", "", text)
+        is_plain_number = bool(re.match(r"^[0-9]+(?:[.,][0-9]+)?$", compact))
+        if not profile.allow_plain_numbers and is_plain_number and "unit" not in reason:
+            continue
+        filtered.append(item)
+    return filtered
+
+
+def finalize_raw_candidates(
+    raw_candidates: list[dict[str, Any]],
+    profile: AnalysisProfile,
+) -> list[DimensionCandidate]:
+    raw_candidates = merge_digit_fragments(raw_candidates)
+    raw_candidates = remove_grouped_digit_artifacts(raw_candidates)
+    raw_candidates = [item for item in raw_candidates if not is_date_like_text(str(item.get("text", "")))]
+    raw_candidates = filter_candidates_for_profile(raw_candidates, profile)
+    raw_candidates = dedupe_candidates(raw_candidates)
+    raw_candidates = visual_order_candidates(raw_candidates)
+    return [
+        DimensionCandidate(number=index, **item)
+        for index, item in enumerate(raw_candidates, start=1)
+    ]
+
+
+def score_candidate_set(candidates: list[DimensionCandidate], profile: AnalysisProfile) -> float:
+    if not candidates:
+        return 0.0
+
+    count = len(candidates)
+    average_confidence = sum(candidate.confidence for candidate in candidates) / count
+    technical_markers = sum(
+        1
+        for candidate in candidates
+        if re.search(r"(?i)(^r|^m|x|\+/-|\u00b1|\+|-|/|mm|cm|in|deg|grados|\")", normalize_text(candidate.text))
+    )
+    marker_ratio = technical_markers / count
+    count_score = min(count, 80) / 80
+    profile_bias = 0.04 if profile.name == "standard" else 0.0
+    if profile.name == "permissive" and count > 140:
+        profile_bias -= 0.18
+    if profile.name == "conservative" and count < 8:
+        profile_bias -= 0.08
+    return (average_confidence * 0.56) + (marker_ratio * 0.28) + (count_score * 0.16) + profile_bias
+
+
+def resolve_analysis_profile(strategy: str) -> AnalysisProfile:
+    key = strategy.strip().lower()
+    if key not in ANALYSIS_PROFILES:
+        raise ValueError("Estrategia no valida. Use auto, standard, conservative, permissive u ocr.")
+    return ANALYSIS_PROFILES[key]
+
+
 def visual_order_candidates(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ordered: list[dict[str, Any]] = []
     by_page: dict[int, list[dict[str, Any]]] = {}
@@ -1144,7 +1271,11 @@ def extracted_page_images(pdf_path: Path, output_dir: Path) -> dict[int, list[Pa
     return extracted
 
 
-def extract_ocr_candidates(pdf_path: Path) -> list[DimensionCandidate]:
+def extract_ocr_candidates(
+    pdf_path: Path,
+    profile: AnalysisProfile | None = None,
+) -> list[DimensionCandidate]:
+    profile = profile or ANALYSIS_PROFILES["ocr"]
     raw_candidates: list[dict[str, Any]] = []
 
     with tempfile.TemporaryDirectory(prefix="cotas_ocr_") as temp_name:
@@ -1219,50 +1350,47 @@ def extract_ocr_candidates(pdf_path: Path) -> list[DimensionCandidate]:
                                 }
                             )
 
-    raw_candidates = merge_digit_fragments(raw_candidates)
-    raw_candidates = remove_grouped_digit_artifacts(raw_candidates)
-    raw_candidates = [item for item in raw_candidates if not is_date_like_text(str(item.get("text", "")))]
-    raw_candidates = dedupe_candidates(raw_candidates)
-    raw_candidates = visual_order_candidates(raw_candidates)
-    return [
-        DimensionCandidate(number=index, **item)
-        for index, item in enumerate(raw_candidates, start=1)
-    ]
+    return finalize_raw_candidates(raw_candidates, profile)
 
 
-def extract_candidates(pdf_path: Path, include_tables: bool = False) -> list[DimensionCandidate]:
+def extract_candidates_with_profile(pdf_path: Path, profile: AnalysisProfile) -> list[DimensionCandidate]:
+    if profile.use_ocr:
+        return extract_ocr_candidates(pdf_path, profile)
+
     raw_candidates: list[dict[str, Any]] = []
 
     with pdfplumber.open(str(pdf_path)) as pdf:
         for page_index, page in enumerate(pdf.pages, start=1):
-            table_bboxes = [] if include_tables else detected_table_bboxes(page)
+            table_bboxes = [] if profile.include_tables else detected_table_bboxes(page)
             all_words = page.extract_words(
                 keep_blank_chars=False,
                 use_text_flow=False,
                 extra_attrs=[],
             )
-            general_tolerance_bboxes = [] if include_tables else detected_general_tolerance_bboxes(
+            general_tolerance_bboxes = [] if profile.include_tables else detected_general_tolerance_bboxes(
                 all_words,
                 float(page.width),
                 float(page.height),
             )
             excluded_bboxes = [*table_bboxes, *general_tolerance_bboxes]
-            raw_candidates.extend(
-                extract_rotated_word_candidates(
-                    all_words,
-                    page_index,
-                    float(page.width),
-                    float(page.height),
-                    excluded_bboxes,
+            if profile.use_rotated:
+                raw_candidates.extend(
+                    extract_rotated_word_candidates(
+                        all_words,
+                        page_index,
+                        float(page.width),
+                        float(page.height),
+                        excluded_bboxes,
+                    )
                 )
-            )
-            raw_candidates.extend(
-                extract_stacked_autocad_decimal_candidates(
-                    page.chars,
-                    page_index,
-                    excluded_bboxes,
+            if profile.use_stacked:
+                raw_candidates.extend(
+                    extract_stacked_autocad_decimal_candidates(
+                        page.chars,
+                        page_index,
+                        excluded_bboxes,
+                    )
                 )
-            )
             words = [
                 word
                 for word in all_words
@@ -1300,11 +1428,8 @@ def extract_candidates(pdf_path: Path, include_tables: bool = False) -> list[Dim
                         confidence = min(confidence + 0.08, 0.96)
                         used_indexes.update(phrase_indexes)
 
-                    in_title_block = (
-                        box["x"] >= float(page.width) * 0.55
-                        and box["y"] >= float(page.height) * 0.86
-                    )
-                    if in_title_block:
+                    in_title_block = box["x"] >= float(page.width) * 0.55 and box["y"] >= float(page.height) * 0.86
+                    if profile.exclude_title_block and in_title_block:
                         continue
 
                     compact_phrase = re.sub(r"\s+", "", normalize_text(phrase or text))
@@ -1327,18 +1452,41 @@ def extract_candidates(pdf_path: Path, include_tables: bool = False) -> list[Dim
                         }
                     )
 
-    if not raw_candidates:
+    candidates = finalize_raw_candidates(raw_candidates, profile)
+    if not candidates and profile.name != "ocr":
         return extract_ocr_candidates(pdf_path)
 
-    raw_candidates = merge_digit_fragments(raw_candidates)
-    raw_candidates = remove_grouped_digit_artifacts(raw_candidates)
-    raw_candidates = [item for item in raw_candidates if not is_date_like_text(str(item.get("text", "")))]
-    raw_candidates = dedupe_candidates(raw_candidates)
-    raw_candidates = visual_order_candidates(raw_candidates)
-    return [
-        DimensionCandidate(number=index, **item)
-        for index, item in enumerate(raw_candidates, start=1)
-    ]
+    return candidates
+
+
+def extract_candidates(
+    pdf_path: Path,
+    include_tables: bool = False,
+    strategy: str = DEFAULT_ANALYSIS_STRATEGY,
+) -> tuple[list[DimensionCandidate], str, bool]:
+    if include_tables and strategy == DEFAULT_ANALYSIS_STRATEGY:
+        strategy = "permissive"
+
+    if strategy != DEFAULT_ANALYSIS_STRATEGY:
+        profile = resolve_analysis_profile(strategy)
+        candidates = extract_candidates_with_profile(pdf_path, profile)
+        return candidates, profile.name, profile.use_ocr or any("ocr" in candidate.reason for candidate in candidates)
+
+    scored_results: list[tuple[float, AnalysisProfile, list[DimensionCandidate]]] = []
+    for profile_name in ("standard", "conservative", "permissive"):
+        profile = ANALYSIS_PROFILES[profile_name]
+        candidates = extract_candidates_with_profile(pdf_path, profile)
+        scored_results.append((score_candidate_set(candidates, profile), profile, candidates))
+
+    best_score, best_profile, best_candidates = max(scored_results, key=lambda item: item[0])
+    if not best_candidates or best_score < 0.46:
+        ocr_profile = ANALYSIS_PROFILES["ocr"]
+        ocr_candidates = extract_ocr_candidates(pdf_path, ocr_profile)
+        ocr_score = score_candidate_set(ocr_candidates, ocr_profile)
+        if ocr_score >= best_score or not best_candidates:
+            return ocr_candidates, ocr_profile.name, True
+
+    return best_candidates, best_profile.name, any("ocr" in candidate.reason for candidate in best_candidates)
 
 
 def clamp(value: float, minimum: float, maximum: float) -> float:
@@ -2057,6 +2205,7 @@ def init_history(db_path: Path) -> None:
                 part_number text,
                 drawing_number text,
                 revision text,
+                analysis_strategy text,
                 source_hash text not null,
                 original_pdf text not null,
                 numbered_pdf text not null,
@@ -2068,16 +2217,47 @@ def init_history(db_path: Path) -> None:
         conn.execute(
             "create index if not exists idx_jobs_lookup on jobs(client, part_number, drawing_number, revision)"
         )
+        columns = {row[1] for row in conn.execute("pragma table_info(jobs)")}
+        if "analysis_strategy" not in columns:
+            try:
+                conn.execute("alter table jobs add column analysis_strategy text")
+            except sqlite3.OperationalError as exc:
+                if "readonly" not in str(exc).lower():
+                    raise
 
 
 def save_history(db_path: Path, job: dict[str, Any]) -> None:
     with sqlite3.connect(db_path) as conn:
+        columns = {row[1] for row in conn.execute("pragma table_info(jobs)")}
+        if "analysis_strategy" not in columns:
+            conn.execute(
+                """
+                insert or replace into jobs (
+                    id, client, part_number, drawing_number, revision, source_hash,
+                    original_pdf, numbered_pdf, candidates_json, created_at
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job["id"],
+                    job.get("client"),
+                    job.get("part_number"),
+                    job.get("drawing_number"),
+                    job.get("revision"),
+                    job["source_hash"],
+                    job["original_pdf"],
+                    job["numbered_pdf"],
+                    job["candidates_json"],
+                    job["created_at"],
+                ),
+            )
+            return
+
         conn.execute(
             """
             insert or replace into jobs (
-                id, client, part_number, drawing_number, revision, source_hash,
+                id, client, part_number, drawing_number, revision, analysis_strategy, source_hash,
                 original_pdf, numbered_pdf, candidates_json, created_at
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job["id"],
@@ -2085,6 +2265,7 @@ def save_history(db_path: Path, job: dict[str, Any]) -> None:
                 job.get("part_number"),
                 job.get("drawing_number"),
                 job.get("revision"),
+                job.get("analysis_strategy"),
                 job["source_hash"],
                 job["original_pdf"],
                 job["numbered_pdf"],
@@ -2117,13 +2298,11 @@ def analyze_command(args: argparse.Namespace) -> None:
     job_json = job_dir / "job.json"
 
     shutil.copy2(input_pdf, original_pdf)
-    candidates = extract_candidates(original_pdf, include_tables=args.include_tables)
-    used_ocr = False
-    if not candidates:
-        ocr_candidates = extract_ocr_candidates(original_pdf)
-        if ocr_candidates:
-            candidates = ocr_candidates
-            used_ocr = True
+    candidates, analysis_strategy, used_ocr = extract_candidates(
+        original_pdf,
+        include_tables=args.include_tables,
+        strategy=args.strategy,
+    )
     draw_numbered_overlay(original_pdf, candidates, numbered_pdf)
 
     candidates_payload = [asdict(candidate) for candidate in candidates]
@@ -2132,6 +2311,7 @@ def analyze_command(args: argparse.Namespace) -> None:
     job = {
         "id": job_id,
         "used_ocr": used_ocr,
+        "analysis_strategy": analysis_strategy,
         "client": args.client,
         "part_number": args.part_number,
         "drawing_number": args.drawing_number,
@@ -2212,6 +2392,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--include-tables",
         action="store_true",
         help="Incluye numeros dentro de tablas. Por defecto se excluyen.",
+    )
+    analyze.add_argument(
+        "--strategy",
+        choices=[DEFAULT_ANALYSIS_STRATEGY, *ANALYSIS_PROFILES.keys()],
+        default=DEFAULT_ANALYSIS_STRATEGY,
+        help="Estrategia de deteccion: auto prueba varios perfiles; las otras fuerzan un perfil.",
     )
     analyze.set_defaults(func=analyze_command)
 

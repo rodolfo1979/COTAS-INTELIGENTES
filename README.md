@@ -22,7 +22,7 @@ Usar el Python empaquetado de Codex, que ya trae `pdfplumber`, `pypdf` y
 `reportlab`:
 
 ```powershell
-& 'C:\Users\rfall\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' tools\cotas_engine.py analyze .\plano.pdf --client "Cliente" --part-number "P-001" --drawing-number "D-001" --revision "A"
+& 'C:\Users\rfall\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' tools\cotas_engine.py analyze .\plano.pdf --client "Cliente" --part-number "P-001" --drawing-number "D-001" --revision "A" --strategy auto
 ```
 
 El comando genera una carpeta en `storage/jobs/` con:
@@ -31,6 +31,14 @@ El comando genera una carpeta en `storage/jobs/` con:
 - `candidates.json`
 - `numbered.pdf`
 - `job.json`
+
+La opcion `--strategy auto` prueba perfiles distintos porque no todos los planos
+vienen con la misma estructura. Tambien se puede forzar:
+
+- `standard`: PDF vectorial normal.
+- `conservative`: mas estricto para evitar notas, cajetines o falsos positivos.
+- `permissive`: mas amplio para formatos no estandar.
+- `ocr`: fuerza OCR para planos escaneados como imagen.
 
 ## Interfaz web provisional
 
@@ -53,6 +61,7 @@ Desde ahi se puede:
 - capturar numero de parte y revision como campos opcionales;
 - buscar clientes precargados o escribir un cliente manualmente;
 - generar el PDF numerado;
+- escoger estrategia automatica o manual segun el tipo de plano;
 - ignorar automaticamente numeros dentro de tablas o cajetines;
 - usar OCR automatico cuando el PDF viene como imagen escaneada;
 - revisar cotas propuestas antes de imprimir;

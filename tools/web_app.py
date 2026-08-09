@@ -17,10 +17,31 @@ from cotas_engine import DimensionCandidate, analyze_command, build_parser, draw
 
 
 ROOT = Path(__file__).resolve().parents[1]
-STORAGE = ROOT / "storage"
+
+
+def writable_storage_path() -> Path:
+    configured = os.getenv("COTAS_STORAGE", "").strip()
+    candidates = [Path(configured)] if configured else []
+    candidates.extend([ROOT / "storage", ROOT / "runtime_storage"])
+
+    for candidate in candidates:
+        path = candidate.resolve()
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            probe = path / ".write_test"
+            probe.write_text("ok", encoding="ascii")
+            probe.unlink(missing_ok=True)
+            return path
+        except OSError:
+            continue
+
+    return ROOT / "runtime_storage"
+
+
+STORAGE = writable_storage_path()
 UPLOADS = STORAGE / "uploads"
 CLIENTS_FILE = ROOT / "data" / "clients.json"
-ENGINE_VERSION = "2026-08-06-rotated-page-overlay"
+ENGINE_VERSION = "2026-08-09-adaptive-analysis-profiles"
 AUTH_USER = os.getenv("COTAS_ADMIN_USER", "admin")
 AUTH_PASSWORD = os.getenv("COTAS_ADMIN_PASSWORD", "")
 AUTH_SECRET = os.getenv("COTAS_SECRET_KEY", "")
@@ -198,6 +219,8 @@ def run_engine(input_pdf: Path, fields: dict[str, str]) -> dict:
             fields.get("drawing_number", ""),
             "--revision",
             fields.get("revision", ""),
+            "--strategy",
+            fields.get("strategy", "auto"),
         ]
     )
     analyze_command(args)
@@ -323,7 +346,7 @@ class App(BaseHTTPRequestHandler):
         elif parsed.path == "/new":
             self.show_home()
         elif parsed.path == "/version":
-            self.send_json({"engine_version": ENGINE_VERSION, "root": str(ROOT)})
+            self.send_json({"engine_version": ENGINE_VERSION, "root": str(ROOT), "storage": str(STORAGE)})
         elif parsed.path == "/history":
             self.show_history(parsed.query)
         elif parsed.path == "/admin":
@@ -423,6 +446,16 @@ class App(BaseHTTPRequestHandler):
     <div><label>Numero de parte</label><input name="part_number"></div>
     <div><label>Numero de plano</label><input name="drawing_number" required></div>
     <div><label>Revision</label><input name="revision" value="A"></div>
+    <div class="wide">
+      <label>Estrategia</label>
+      <select name="strategy">
+        <option value="auto" selected>Automatica</option>
+        <option value="standard">Vectorial normal</option>
+        <option value="conservative">Conservadora</option>
+        <option value="permissive">Permisiva</option>
+        <option value="ocr">OCR escaneado</option>
+      </select>
+    </div>
     <div class="wide"><label>PDF del plano</label><input type="file" name="pdf" accept="application/pdf" required></div>
   </div>
   <div class="actions"><button type="submit">Analizar y numerar</button><span class="muted">El sistema guardara original, numerado e historial.</span></div>
@@ -430,7 +463,7 @@ class App(BaseHTTPRequestHandler):
 <section>
   <h2>Como trabaja esta version</h2>
   <p class="muted">El cliente se puede buscar en la lista o escribir manualmente si no existe. Solo cliente y numero de plano son obligatorios; numero de parte y revision quedan como datos opcionales.</p>
-  <p class="muted">Detecta textos que parecen cotas en PDFs vectoriales y excluye automaticamente numeros dentro de tablas o cajetines. Si el plano viene escaneado como imagen, intenta usar OCR automatico.</p>
+  <p class="muted">Detecta textos que parecen cotas usando estrategia automatica o perfiles manuales segun el tipo de plano. Si el plano viene escaneado como imagen, puede usar OCR.</p>
 </section>
 <script>
   const clientNames = CLIENTS_JSON;
@@ -670,6 +703,7 @@ class App(BaseHTTPRequestHandler):
 <section>
   <h2>{esc(job_title(job))}</h2>
   <p class="ok">{len(candidates)} cotas propuestas</p>
+  <p class="muted">Estrategia usada: {esc(job.get("analysis_strategy") or "standard")}</p>
   <div class="actions">
     <a class="button" href="/file/{quote(job['numbered_pdf'])}">Descargar PDF numerado</a>
     {tolerance_button}
@@ -864,6 +898,7 @@ class App(BaseHTTPRequestHandler):
             "part_number": form.getfirst("part_number", "").strip(),
             "drawing_number": form.getfirst("drawing_number", "").strip(),
             "revision": form.getfirst("revision", "").strip(),
+            "strategy": form.getfirst("strategy", "auto").strip() or "auto",
         }
         if not fields["client"] or not fields["drawing_number"]:
             self.send_html(
