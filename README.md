@@ -38,6 +38,7 @@ vienen con la misma estructura. Tambien se puede forzar:
 - `standard`: PDF vectorial normal.
 - `conservative`: mas estricto para evitar notas, cajetines o falsos positivos.
 - `permissive`: mas amplio para formatos no estandar.
+- `vertical_side`: para planos en vertical con cajetin lateral derecho; bloquea la franja derecha.
 - `ocr`: fuerza OCR para planos escaneados como imagen.
 
 ## Interfaz web provisional

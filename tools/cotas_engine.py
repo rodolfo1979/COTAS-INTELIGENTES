@@ -89,6 +89,7 @@ class AnalysisProfile:
     min_confidence: float = 0.0
     allow_plain_numbers: bool = True
     exclude_title_block: bool = True
+    right_exclusion_ratio: float = 0.0
     description: str = ""
 
 
@@ -108,6 +109,12 @@ ANALYSIS_PROFILES: dict[str, AnalysisProfile] = {
         include_tables=True,
         min_confidence=0.55,
         description="Mas amplio para planos con formatos no estandar o cotas en zonas tipo tabla.",
+    ),
+    "vertical_side": AnalysisProfile(
+        name="vertical_side",
+        min_confidence=0.70,
+        right_exclusion_ratio=0.30,
+        description="Planos en vertical con cajetin lateral derecho; bloquea esa franja.",
     ),
     "ocr": AnalysisProfile(
         name="ocr",
@@ -481,6 +488,14 @@ def detected_title_block_bboxes(words: list[dict[str, Any]], page_width: float, 
 
         boxes.append((x0, top, x1, bottom))
 
+    return boxes
+
+
+def profile_excluded_bboxes(profile: AnalysisProfile, page_width: float, page_height: float) -> list[PdfBBox]:
+    boxes: list[PdfBBox] = []
+    if profile.right_exclusion_ratio > 0:
+        left = page_width * (1.0 - profile.right_exclusion_ratio)
+        boxes.append((left, 0.0, page_width, page_height))
     return boxes
 
 
@@ -1046,7 +1061,7 @@ def score_candidate_set(candidates: list[DimensionCandidate], profile: AnalysisP
 def resolve_analysis_profile(strategy: str) -> AnalysisProfile:
     key = strategy.strip().lower()
     if key not in ANALYSIS_PROFILES:
-        raise ValueError("Estrategia no valida. Use auto, standard, conservative, permissive u ocr.")
+        raise ValueError("Estrategia no valida. Use auto, standard, conservative, permissive, vertical_side u ocr.")
     return ANALYSIS_PROFILES[key]
 
 
@@ -1441,7 +1456,8 @@ def extract_candidates_with_profile(pdf_path: Path, profile: AnalysisProfile) ->
                 float(page.width),
                 float(page.height),
             ) if profile.exclude_title_block else []
-            excluded_bboxes = [*table_bboxes, *general_tolerance_bboxes, *title_block_bboxes]
+            profile_bboxes = profile_excluded_bboxes(profile, float(page.width), float(page.height))
+            excluded_bboxes = [*table_bboxes, *general_tolerance_bboxes, *title_block_bboxes, *profile_bboxes]
             if profile.use_rotated:
                 raw_candidates.extend(
                     extract_rotated_word_candidates(
