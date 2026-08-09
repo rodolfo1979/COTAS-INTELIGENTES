@@ -65,6 +65,11 @@ GENERAL_TOLERANCE_NOTATION_RE = re.compile(
     r"(?i)(?:\.[Xx]{1,4}|(?<!\d)[Xx]{2,4})\s*(?:\+/-|[+]\s*/\s*-|[Â±±]|[+]\s*[-])\s*\.?\d+"
 )
 
+NOTE_CONTEXT_LINE_RE = re.compile(
+    r"(?i)\b(?:notes?|material|finish|deburr|break\s+edges?|remove\s+burrs?|surface|"
+    r"plating|coating|anodize|passivate|heat\s+treat|unless\s+otherwise)\b"
+)
+
 
 @dataclass
 class DimensionCandidate:
@@ -340,6 +345,8 @@ def looks_like_dimension(
         return False, 0.0, "ignored general tolerance block"
     if line_text and GENERAL_TOLERANCE_NOTATION_RE.search(line_text):
         return False, 0.0, "ignored general tolerance notation"
+    if line_text and NOTE_CONTEXT_LINE_RE.search(line_text):
+        return False, 0.0, "ignored note line"
 
     is_plain_number = bool(re.match(r"^[0-9]+(?:[.,][0-9]+)?$", compact))
     if is_plain_number and len(line_tokens) > 12 and not line_has_unit_nearby:
@@ -499,6 +506,58 @@ def profile_excluded_bboxes(profile: AnalysisProfile, page_width: float, page_he
     if profile.right_exclusion_ratio > 0:
         left = page_width * (1.0 - profile.right_exclusion_ratio)
         boxes.append((left, 0.0, page_width, page_height))
+    return boxes
+
+
+def detected_note_bboxes(words: list[dict[str, Any]], page_width: float, page_height: float) -> list[PdfBBox]:
+    if not words:
+        return []
+
+    lines: list[list[dict[str, Any]]] = []
+    for word in sorted(words, key=lambda item: (float(item.get("top", 0)), float(item.get("x0", 0)))):
+        if not lines or abs(float(lines[-1][0].get("top", 0)) - float(word.get("top", 0))) >= 4:
+            lines.append([word])
+        else:
+            lines[-1].append(word)
+
+    boxes: list[PdfBBox] = []
+    for index, line_words in enumerate(lines):
+        line_text = normalize_text(" ".join(str(word.get("text", "")) for word in line_words))
+        line_box = union_pdf_words(line_words)
+        line_is_notes_header = bool(re.search(r"(?i)\bnotes?\s*:?\b", line_text))
+        line_is_numbered_note = bool(
+            re.search(r"^\s*\d+\s*[\.)-]", line_text)
+            and NOTE_CONTEXT_LINE_RE.search(line_text)
+        )
+        if not line_is_notes_header and not line_is_numbered_note:
+            continue
+
+        block_words = list(line_words)
+        left_limit = max(0.0, line_box["x"] - 30.0)
+        right_limit = min(page_width, line_box["x"] + max(line_box["width"], page_width * 0.26) + 180.0)
+        bottom_limit = min(page_height, line_box["y"] + max(page_height * 0.30, 180.0))
+        for extra_line in lines[index + 1 : index + 10]:
+            extra_text = normalize_text(" ".join(str(word.get("text", "")) for word in extra_line))
+            extra_box = union_pdf_words(extra_line)
+            extra_center_x = extra_box["x"] + extra_box["width"] / 2
+            if extra_box["y"] > bottom_limit:
+                break
+            if left_limit <= extra_center_x <= right_limit and (
+                NOTE_CONTEXT_LINE_RE.search(extra_text)
+                or re.search(r"^\s*\d+\s*[\.)-]", extra_text)
+            ):
+                block_words.extend(extra_line)
+
+        union = union_pdf_words(block_words)
+        boxes.append(
+            (
+                max(0.0, union["x"] - 14.0),
+                max(0.0, union["y"] - 10.0),
+                min(page_width, union["x"] + union["width"] + 14.0),
+                min(page_height, union["y"] + union["height"] + 10.0),
+            )
+        )
+
     return boxes
 
 
@@ -1459,8 +1518,19 @@ def extract_candidates_with_profile(pdf_path: Path, profile: AnalysisProfile) ->
                 float(page.width),
                 float(page.height),
             ) if profile.exclude_title_block else []
+            note_bboxes = detected_note_bboxes(
+                all_words,
+                float(page.width),
+                float(page.height),
+            ) if profile.exclude_title_block else []
             profile_bboxes = profile_excluded_bboxes(profile, float(page.width), float(page.height))
-            excluded_bboxes = [*table_bboxes, *general_tolerance_bboxes, *title_block_bboxes, *profile_bboxes]
+            excluded_bboxes = [
+                *table_bboxes,
+                *general_tolerance_bboxes,
+                *title_block_bboxes,
+                *note_bboxes,
+                *profile_bboxes,
+            ]
             if profile.use_rotated:
                 raw_candidates.extend(
                     extract_rotated_word_candidates(
@@ -1741,6 +1811,7 @@ def page_forbidden_label_bboxes(pdf_path: Path) -> dict[int, list[PdfBBox]]:
                 )
                 occupied[page_index] = [
                     *detected_title_block_bboxes(words, float(page.width), float(page.height)),
+                    *detected_note_bboxes(words, float(page.width), float(page.height)),
                     *detected_general_tolerance_bboxes(words, float(page.width), float(page.height)),
                     *detected_revision_history_bboxes(words, float(page.width), float(page.height)),
                 ]
