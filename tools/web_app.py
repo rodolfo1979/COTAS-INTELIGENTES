@@ -41,7 +41,7 @@ def writable_storage_path() -> Path:
 STORAGE = writable_storage_path()
 UPLOADS = STORAGE / "uploads"
 CLIENTS_FILE = ROOT / "data" / "clients.json"
-ENGINE_VERSION = "2026-08-09-note-block-filter"
+ENGINE_VERSION = "2026-08-09-admin-strategy-help"
 AUTH_USER = os.getenv("COTAS_ADMIN_USER", "admin")
 AUTH_PASSWORD = os.getenv("COTAS_ADMIN_PASSWORD", "")
 AUTH_SECRET = os.getenv("COTAS_SECRET_KEY", "")
@@ -661,6 +661,20 @@ class App(BaseHTTPRequestHandler):
     <a class="button" href="/new">Cargar plano nuevo</a>
     <a class="button secondary" href="/history">Buscar historial</a>
   </div>
+</section>
+<section>
+  <h2>Uso de estrategias</h2>
+  <table>
+    <thead><tr><th>Opcion</th><th>Cuando usarla</th></tr></thead>
+    <tbody>
+      <tr><td>Automatica</td><td>Primera opcion para la mayoria de planos; el sistema compara varios perfiles.</td></tr>
+      <tr><td>Vectorial normal</td><td>PDF limpio exportado de CAD, con texto seleccionable y cotas claras.</td></tr>
+      <tr><td>Conservadora</td><td>Cuando aparecen falsos positivos en cajetines, fechas, notas o revisiones.</td></tr>
+      <tr><td>Permisiva</td><td>Cuando faltan muchas cotas reales o el formato del plano es poco comun.</td></tr>
+      <tr><td>Vertical cajetin lateral</td><td>Planos girados con cajetin/notas en el lado derecho; bloquea esa franja lateral.</td></tr>
+      <tr><td>OCR escaneado</td><td>PDF escaneado o imagen donde el texto no se puede seleccionar.</td></tr>
+    </tbody>
+  </table>
 </section>
 <section>
   <h2>Planos por cliente</h2>
