@@ -28,11 +28,11 @@ DIMENSION_RE = re.compile(
     (?:
       (?:[0-9]+x\s*)?
       (?:
-        (?:\+/-|\u00b1)?\s*[rms]?\s*(?:[0-9]+(?:[.,][0-9]+)?|[.,][0-9]+)
+        \(?\s*(?:\+/-|\u00b1)?\s*[drms]?\s*(?:[0-9]+(?:[.,][0-9]+)?|[.,][0-9]+)\s*\)?
         |
-        [0-9]+/[0-9]+
+        \(?\s*[0-9]+/[0-9]+\s*\)?
         |
-        [0-9]+\s*-\s*[0-9]+
+        \(?\s*[0-9]+\s*-\s*[0-9]+\s*\)?
       )
       (?:\s*(?:mm|cm|in|deg|degree|degrees|grados|"|\u00b0)?)?
       (?:\s*(?:\+/-|\u00b1|\+|-)\s*(?:[0-9]+(?:[.,][0-9]+)?|[.,][0-9]+))?
@@ -144,8 +144,9 @@ def normalize_text(text: str) -> str:
         .replace("\uf06d", "M")
         .replace("\uf078", "")
         .replace("\uf06a", "")
-        .replace("\u00d8", "R")
-        .replace("\u2300", "R")
+        .replace("\u00d8", "D")
+        .replace("\u00f8", "D")
+        .replace("\u2300", "D")
         .replace("\u00b0", "deg")
     )
 
@@ -214,6 +215,7 @@ def line_has_date_fragment(text: str) -> bool:
 
 def inspection_nominal_text(text: str) -> str:
     clean = normalize_text(text).strip()
+    clean = re.sub(r"^\((.*)\)$", r"\1", clean).strip()
     clean = re.sub(r"(?i)^\s*\d+\s*X\s+", "", clean)
     clean = re.sub(r"(?i)^\s*\d+\s*X(?=[RMS]?\s*(?:\d|\.))", "", clean)
     return clean.strip()
@@ -244,7 +246,8 @@ def tolerance_info(text: str) -> dict[str, Any]:
                 explicit_minus = -abs(value)
 
     radius_match = re.search(r"(?i)\bR\s*((?:\d+\.\d+|\.\d+|\d+))", clean)
-    value_tokens = [radius_match.group(1)] if radius_match else re.findall(r"(?<![A-Za-z])(?:\d+\.\d+|\.\d+|\d+)(?![A-Za-z])", clean)
+    diameter_match = re.search(r"(?i)\bD\s*((?:\d+\.\d+|\.\d+|\d+))", clean)
+    value_tokens = [radius_match.group(1)] if radius_match else [diameter_match.group(1)] if diameter_match else re.findall(r"(?<![A-Za-z])(?:\d+\.\d+|\.\d+|\d+)(?![A-Za-z])", clean)
     nominal_token = ""
     nominal: float | None = None
     for token in value_tokens:
@@ -317,7 +320,7 @@ def looks_like_dimension(
         return False, 0.0, "ignored unlikely ocr integer"
 
     has_strong_marker = bool(
-        re.search(r"(?i)(^r|^m|x|\+/-|\u00b1|\+|-|/|mm|cm|in|deg|grados|\")", compact)
+        re.search(r"(?i)(^\(?[rdm]|x|\+/-|\u00b1|\+|-|/|mm|cm|in|deg|grados|\")", compact)
     )
     if re.match(r"^[0-9]$", compact) and not has_strong_marker and not line_has_unit_nearby:
         return False, 0.0, "ignored single digit"
@@ -351,7 +354,7 @@ def looks_like_dimension(
         if re.search(r"(?i)(mm|cm|in|deg|grados|\")", compact):
             confidence += 0.08
             reason += " with unit"
-        if re.search(r"(?i)(^r|^m|x|\+/-|\u00b1|\+|-|/)", compact):
+        if re.search(r"(?i)(^\(?[rdm]|x|\+/-|\u00b1|\+|-|/)", compact):
             confidence += 0.08
             reason += " with technical marker"
         return True, min(confidence, 0.96), reason
@@ -1046,7 +1049,7 @@ def score_candidate_set(candidates: list[DimensionCandidate], profile: AnalysisP
     technical_markers = sum(
         1
         for candidate in candidates
-        if re.search(r"(?i)(^r|^m|x|\+/-|\u00b1|\+|-|/|mm|cm|in|deg|grados|\")", normalize_text(candidate.text))
+        if re.search(r"(?i)(^\(?[rdm]|x|\+/-|\u00b1|\+|-|/|mm|cm|in|deg|grados|\")", normalize_text(candidate.text))
     )
     marker_ratio = technical_markers / count
     count_score = min(count, 80) / 80
