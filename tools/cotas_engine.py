@@ -107,7 +107,6 @@ ANALYSIS_PROFILES: dict[str, AnalysisProfile] = {
         name="permissive",
         include_tables=True,
         min_confidence=0.55,
-        exclude_title_block=False,
         description="Mas amplio para planos con formatos no estandar o cotas en zonas tipo tabla.",
     ),
     "ocr": AnalysisProfile(
@@ -418,6 +417,71 @@ def detected_table_bboxes(page: pdfplumber.page.Page) -> list[PdfBBox]:
         bboxes.append((x0, top, x1, bottom))
 
     return bboxes
+
+
+def detected_title_block_bboxes(words: list[dict[str, Any]], page_width: float, page_height: float) -> list[PdfBBox]:
+    if not words:
+        return []
+
+    keyword_re = re.compile(
+        r"(?i)\b(?:"
+        r"date|drawn|checked|approved|revision|rev|sheet|of|scale|title|description|"
+        r"material|finish|cage|code|dwg|drawing|part|number|third\s+angle|projection|"
+        r"tolerances?|dimensions?|unless|specified|angular|decimal|fraction|notes?"
+        r")\b"
+    )
+    page_area = page_width * page_height
+    boxes: list[PdfBBox] = []
+
+    edge_regions = [
+        ("right", [word for word in words if float(word.get("x0", 0)) >= page_width * 0.68]),
+        ("bottom", [word for word in words if float(word.get("top", 0)) >= page_height * 0.72]),
+        ("left", [word for word in words if float(word.get("x1", 0)) <= page_width * 0.20]),
+    ]
+
+    for region, region_words in edge_regions:
+        if len(region_words) < 8:
+            continue
+        keyword_words = [
+            word
+            for word in region_words
+            if keyword_re.search(normalize_text(str(word.get("text", ""))))
+        ]
+        if len(keyword_words) < 3:
+            continue
+
+        union = union_pdf_words(region_words)
+        width = union["width"]
+        height = union["height"]
+        if width <= 0 or height <= 0:
+            continue
+
+        area_ratio = (width * height) / page_area
+        vertical_strip = region == "right" and height >= page_height * 0.32 and width <= page_width * 0.36
+        bottom_block = region == "bottom" and width >= page_width * 0.32 and height <= page_height * 0.34
+        left_revision = region == "left" and height >= page_height * 0.20 and width <= page_width * 0.24
+        if not (vertical_strip or bottom_block or left_revision or area_ratio >= 0.05):
+            continue
+
+        if region == "right":
+            x0 = max(0.0, min(float(word.get("x0", 0)) for word in keyword_words) - 26.0)
+            top = max(0.0, union["y"] - 18.0)
+            x1 = page_width
+            bottom = min(page_height, union["y"] + union["height"] + 18.0)
+        elif region == "bottom":
+            x0 = max(0.0, union["x"] - 18.0)
+            top = max(0.0, min(float(word.get("top", 0)) for word in keyword_words) - 18.0)
+            x1 = min(page_width, union["x"] + union["width"] + 18.0)
+            bottom = page_height
+        else:
+            x0 = 0.0
+            top = max(0.0, union["y"] - 18.0)
+            x1 = min(page_width, union["x"] + union["width"] + 18.0)
+            bottom = min(page_height, union["y"] + union["height"] + 18.0)
+
+        boxes.append((x0, top, x1, bottom))
+
+    return boxes
 
 
 def detected_general_tolerance_bboxes(words: list[dict[str, Any]], page_width: float, page_height: float) -> list[PdfBBox]:
@@ -1372,7 +1436,12 @@ def extract_candidates_with_profile(pdf_path: Path, profile: AnalysisProfile) ->
                 float(page.width),
                 float(page.height),
             )
-            excluded_bboxes = [*table_bboxes, *general_tolerance_bboxes]
+            title_block_bboxes = detected_title_block_bboxes(
+                all_words,
+                float(page.width),
+                float(page.height),
+            ) if profile.exclude_title_block else []
+            excluded_bboxes = [*table_bboxes, *general_tolerance_bboxes, *title_block_bboxes]
             if profile.use_rotated:
                 raw_candidates.extend(
                     extract_rotated_word_candidates(
@@ -1652,6 +1721,7 @@ def page_forbidden_label_bboxes(pdf_path: Path) -> dict[int, list[PdfBBox]]:
                     extra_attrs=[],
                 )
                 occupied[page_index] = [
+                    *detected_title_block_bboxes(words, float(page.width), float(page.height)),
                     *detected_general_tolerance_bboxes(words, float(page.width), float(page.height)),
                     *detected_revision_history_bboxes(words, float(page.width), float(page.height)),
                 ]
