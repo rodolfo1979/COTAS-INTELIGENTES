@@ -1023,6 +1023,49 @@ def expanded_dimension_phrase(
     return phrase, union_pdf_words(phrase_words), list(range(start, end + 1))
 
 
+def looks_like_callout_line(line_text: str) -> bool:
+    clean = normalize_text(line_text).upper()
+    compact = re.sub(r"\s+", "", clean)
+    if NOTE_CONTEXT_LINE_RE.search(clean) or GENERAL_TOLERANCE_LINE_RE.search(clean):
+        return False
+    if not re.search(r"(?:^|[\s(])(?:D|R)?\.?\d", clean):
+        return False
+    return bool(
+        re.search(r"\b(?:THRU|ALL|NEAR|FAR|SIDE|TYP|PLCS|PLACES|UNC|UNF|THREAD|THD)\b", clean)
+        or re.search(r"\bX\s*\d+(?:\.\d+)?(?:DEG|°)?\b", clean)
+        or re.search(r"(?:^|[\s(])[DR]\.?\d", clean)
+        or re.search(r"\b\d+\s*-\s*\d+\s*(?:UNC|UNF|UNEF)\b", clean)
+        or re.search(r"\.\d{2,4}", compact)
+    )
+
+
+def extract_multiline_callout_candidates(
+    lines: list[list[dict[str, Any]]],
+    page_index: int,
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for line_words in lines:
+        ordered_line = sorted(line_words, key=lambda item: float(item.get("x0", 0)))
+        line_text = " ".join(str(word.get("text", "")).strip() for word in ordered_line if str(word.get("text", "")).strip())
+        if not looks_like_callout_line(line_text):
+            continue
+        ok, confidence, reason = looks_like_dimension(line_text, line_text, line_text)
+        if not ok:
+            confidence = 0.86
+            reason = "technical callout line"
+        box = union_pdf_words(ordered_line)
+        candidates.append(
+            {
+                "page": page_index,
+                "text": line_text,
+                **box,
+                "confidence": round(max(confidence, 0.84), 3),
+                "reason": reason if reason != "not a dimension" else "technical callout line",
+            }
+        )
+    return candidates
+
+
 def dedupe_candidates(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     def boxes_overlap(a: dict[str, Any], b: dict[str, Any]) -> bool:
         ax0, ay0 = a["x"], a["y"]
@@ -1560,6 +1603,8 @@ def extract_candidates_with_profile(pdf_path: Path, profile: AnalysisProfile) ->
                     lines.append([word])
                 else:
                     lines[-1].append(word)
+
+            raw_candidates.extend(extract_multiline_callout_candidates(lines, page_index))
 
             for line_words in lines:
                 ordered_line = sorted(line_words, key=lambda item: float(item.get("x0", 0)))
