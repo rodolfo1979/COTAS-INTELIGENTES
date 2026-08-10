@@ -41,7 +41,7 @@ def writable_storage_path() -> Path:
 STORAGE = writable_storage_path()
 UPLOADS = STORAGE / "uploads"
 CLIENTS_FILE = ROOT / "data" / "clients.json"
-ENGINE_VERSION = "2026-08-09-header-grid-filter"
+ENGINE_VERSION = "2026-08-09-bulk-delete-admin"
 AUTH_USER = os.getenv("COTAS_ADMIN_USER", "admin")
 AUTH_PASSWORD = os.getenv("COTAS_ADMIN_PASSWORD", "")
 AUTH_SECRET = os.getenv("COTAS_SECRET_KEY", "")
@@ -376,6 +376,8 @@ class App(BaseHTTPRequestHandler):
             self.handle_upload()
         elif parsed.path.startswith("/edit/"):
             self.handle_edit(unquote(parsed.path.removeprefix("/edit/")))
+        elif parsed.path == "/delete-selected":
+            self.handle_delete_selected()
         elif parsed.path.startswith("/delete/"):
             self.handle_delete(unquote(parsed.path.removeprefix("/delete/")))
         else:
@@ -612,6 +614,7 @@ class App(BaseHTTPRequestHandler):
 
         rows = "".join(
             f"""<tr>
+  <td><input type="checkbox" name="job_id" value="{esc(job['id'])}"></td>
   <td><a href="/job/{quote(job['id'])}">{esc(job.get('drawing_number') or job['id'])}</a></td>
   <td>{esc(job.get('client'))}</td>
   <td>{esc(job.get('part_number'))}</td>
@@ -619,15 +622,13 @@ class App(BaseHTTPRequestHandler):
   <td>{self.candidate_count(job)}</td>
   <td>{esc(display_date(job.get('created_at')))}</td>
   <td>
-    <form class="inline-form" method="post" action="/delete/{quote(job['id'])}?page={current_page}" onsubmit="return confirm('Eliminar este plano y sus archivos?');">
-      <button class="danger" type="submit">Eliminar</button>
-    </form>
+    <button class="danger" type="submit" formaction="/delete/{quote(job['id'])}?page={current_page}" onclick="return confirm('Eliminar este plano y sus archivos?');">Eliminar</button>
   </td>
 </tr>"""
             for job in page_jobs
         )
         if not rows:
-            rows = '<tr><td colspan="7" class="muted">No hay planos cargados.</td></tr>'
+            rows = '<tr><td colspan="8" class="muted">No hay planos cargados.</td></tr>'
 
         page_links = []
         previous_class = "page-link" if current_page > 1 else "page-link disabled"
@@ -682,10 +683,16 @@ class App(BaseHTTPRequestHandler):
 </section>
 <section>
   <h2>Historial administrativo</h2>
+  <form method="post" action="/delete-selected?page={current_page}" onsubmit="return confirm('Eliminar los planos seleccionados y sus archivos?');">
+  <div class="actions">
+    <button class="danger" type="submit">Eliminar seleccionados</button>
+    <span class="muted">Marque una o varias casillas antes de eliminar.</span>
+  </div>
   <table>
-    <thead><tr><th>Plano</th><th>Cliente</th><th>Parte</th><th>Revision</th><th>Cotas</th><th>Fecha</th><th>Accion</th></tr></thead>
+    <thead><tr><th><input type="checkbox" onclick="document.querySelectorAll('input[name=job_id]').forEach((box) => box.checked = this.checked)"></th><th>Plano</th><th>Cliente</th><th>Parte</th><th>Revision</th><th>Cotas</th><th>Fecha</th><th>Accion</th></tr></thead>
     <tbody>{rows}</tbody>
   </table>
+  </form>
   {pager}
 </section>
 """
@@ -879,27 +886,50 @@ class App(BaseHTTPRequestHandler):
         except Exception:
             return 0
 
-    def handle_delete(self, job_id: str) -> None:
+    def delete_job_record(self, job_id: str) -> tuple[bool, str]:
         import sqlite3
 
-        page = parse_qs(urlparse(self.path).query).get("page", ["1"])[0]
         job = self.find_job(job_id)
         if not job:
-            self.redirect(f"/admin?page={quote(page)}")
-            return
+            return False, "Trabajo no encontrado."
 
         job_dir = Path(job["original_pdf"]).resolve().parent
         jobs_root = (STORAGE / "jobs").resolve()
         try:
             job_dir.relative_to(jobs_root)
         except ValueError:
-            self.send_html("Error", "<section><h2>No se pudo validar la carpeta del plano.</h2></section>", 400)
-            return
+            return False, "No se pudo validar la carpeta del plano."
 
         shutil.rmtree(job_dir, ignore_errors=True)
         db_path = STORAGE / "history.sqlite"
         with sqlite3.connect(db_path) as conn:
             conn.execute("delete from jobs where id = ?", (job_id,))
+        return True, ""
+
+    def handle_delete(self, job_id: str) -> None:
+        page = parse_qs(urlparse(self.path).query).get("page", ["1"])[0]
+        ok, message = self.delete_job_record(job_id)
+        if not ok and "validar" in message:
+            self.send_html("Error", f"<section><h2>{esc(message)}</h2></section>", 400)
+            return
+
+        self.redirect(f"/admin?page={quote(page)}")
+
+    def handle_delete_selected(self) -> None:
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        raw = self.rfile.read(length).decode("utf-8", errors="replace")
+        form = parse_qs(raw)
+        page = parse_qs(urlparse(self.path).query).get("page", ["1"])[0]
+        job_ids = [job_id for job_id in form.get("job_id", []) if job_id]
+        if not job_ids:
+            self.redirect(f"/admin?page={quote(page)}")
+            return
+
+        for job_id in job_ids:
+            ok, message = self.delete_job_record(job_id)
+            if not ok and "validar" in message:
+                self.send_html("Error", f"<section><h2>{esc(message)}</h2></section>", 400)
+                return
 
         self.redirect(f"/admin?page={quote(page)}")
 
