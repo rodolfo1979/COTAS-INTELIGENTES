@@ -467,6 +467,46 @@ def detected_title_block_bboxes(words: list[dict[str, Any]], page_width: float, 
         if len(keyword_words) < 3:
             continue
 
+        if region == "right":
+            keyword_clusters: list[list[dict[str, Any]]] = []
+            for word in sorted(keyword_words, key=lambda item: float(item.get("top", 0))):
+                if not keyword_clusters:
+                    keyword_clusters.append([word])
+                    continue
+                previous_bottom = max(float(item.get("bottom", 0)) for item in keyword_clusters[-1])
+                if float(word.get("top", 0)) - previous_bottom > 72:
+                    keyword_clusters.append([word])
+                else:
+                    keyword_clusters[-1].append(word)
+
+            for keyword_cluster in keyword_clusters:
+                if len(keyword_cluster) < 3:
+                    continue
+                keyword_union = union_pdf_words(keyword_cluster)
+                top_limit = max(0.0, keyword_union["y"] - 44.0)
+                bottom_limit = min(page_height, keyword_union["y"] + keyword_union["height"] + 44.0)
+                block_words = [
+                    word
+                    for word in region_words
+                    if top_limit
+                    <= (float(word.get("top", 0)) + float(word.get("bottom", 0))) / 2
+                    <= bottom_limit
+                ]
+                if len(block_words) < 6:
+                    continue
+                block_union = union_pdf_words(block_words)
+                if block_union["width"] > page_width * 0.38:
+                    continue
+                boxes.append(
+                    (
+                        max(0.0, min(float(word.get("x0", 0)) for word in keyword_cluster) - 26.0),
+                        max(0.0, block_union["y"] - 12.0),
+                        page_width,
+                        min(page_height, block_union["y"] + block_union["height"] + 12.0),
+                    )
+                )
+            continue
+
         union = union_pdf_words(region_words)
         width = union["width"]
         height = union["height"]
@@ -1043,26 +1083,41 @@ def extract_multiline_callout_candidates(
     lines: list[list[dict[str, Any]]],
     page_index: int,
 ) -> list[dict[str, Any]]:
+    def split_callout_clusters(ordered_line: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+        clusters: list[list[dict[str, Any]]] = []
+        for word in ordered_line:
+            if not clusters:
+                clusters.append([word])
+                continue
+            previous = clusters[-1][-1]
+            gap = float(word.get("x0", 0)) - float(previous.get("x1", 0))
+            if gap > 35:
+                clusters.append([word])
+            else:
+                clusters[-1].append(word)
+        return clusters
+
     candidates: list[dict[str, Any]] = []
     for line_words in lines:
         ordered_line = sorted(line_words, key=lambda item: float(item.get("x0", 0)))
-        line_text = " ".join(str(word.get("text", "")).strip() for word in ordered_line if str(word.get("text", "")).strip())
-        if not looks_like_callout_line(line_text):
-            continue
-        ok, confidence, reason = looks_like_dimension(line_text, line_text, line_text)
-        if not ok:
-            confidence = 0.86
-            reason = "technical callout line"
-        box = union_pdf_words(ordered_line)
-        candidates.append(
-            {
-                "page": page_index,
-                "text": line_text,
-                **box,
-                "confidence": round(max(confidence, 0.84), 3),
-                "reason": reason if reason != "not a dimension" else "technical callout line",
-            }
-        )
+        for cluster_words in split_callout_clusters(ordered_line):
+            line_text = " ".join(str(word.get("text", "")).strip() for word in cluster_words if str(word.get("text", "")).strip())
+            if not looks_like_callout_line(line_text):
+                continue
+            ok, confidence, reason = looks_like_dimension(line_text, line_text, line_text)
+            if not ok:
+                confidence = 0.86
+                reason = "technical callout line"
+            box = union_pdf_words(cluster_words)
+            candidates.append(
+                {
+                    "page": page_index,
+                    "text": line_text,
+                    **box,
+                    "confidence": round(max(confidence, 0.84), 3),
+                    "reason": reason if reason != "not a dimension" else "technical callout line",
+                }
+            )
     return candidates
 
 
@@ -1091,6 +1146,15 @@ def dedupe_candidates(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
             same_text = normalize_text(item["text"]).lower() == normalize_text(existing["text"]).lower()
             same_physical_text = boxes_overlap(item, existing) or center_distance(item, existing) <= 4
             if same_text and same_physical_text:
+                duplicate = True
+                break
+            item_text = re.sub(r"\s+", "", normalize_text(item["text"]).lower())
+            existing_text = re.sub(r"\s+", "", normalize_text(existing["text"]).lower())
+            text_contained = item_text in existing_text or existing_text in item_text
+            if same_physical_text and text_contained:
+                if len(item_text) > len(existing_text):
+                    unique.remove(existing)
+                    break
                 duplicate = True
                 break
 
