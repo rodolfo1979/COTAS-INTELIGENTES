@@ -69,6 +69,9 @@ NOTE_CONTEXT_LINE_RE = re.compile(
     r"(?i)\b(?:notes?|material|finish|deburr|break\s+edges?|remove\s+burrs?|surface|"
     r"plating|coating|anodize|passivate|heat\s+treat|unless\s+otherwise)\b"
 )
+HEADER_STATUS_LINE_RE = re.compile(
+    r"(?i)\b(?:state|released|date|effectivity|upon\s+release|gmt)\b"
+)
 
 
 @dataclass
@@ -347,6 +350,8 @@ def looks_like_dimension(
         return False, 0.0, "ignored general tolerance notation"
     if line_text and NOTE_CONTEXT_LINE_RE.search(line_text):
         return False, 0.0, "ignored note line"
+    if line_text and HEADER_STATUS_LINE_RE.search(line_text):
+        return False, 0.0, "ignored drawing header line"
 
     is_plain_number = bool(re.match(r"^[0-9]+(?:[.,][0-9]+)?$", compact))
     if is_plain_number and len(line_tokens) > 12 and not line_has_unit_nearby:
@@ -1066,7 +1071,7 @@ def expanded_dimension_phrase(
 def looks_like_callout_line(line_text: str) -> bool:
     clean = normalize_text(line_text).upper()
     compact = re.sub(r"\s+", "", clean)
-    if NOTE_CONTEXT_LINE_RE.search(clean) or GENERAL_TOLERANCE_LINE_RE.search(clean):
+    if NOTE_CONTEXT_LINE_RE.search(clean) or GENERAL_TOLERANCE_LINE_RE.search(clean) or HEADER_STATUS_LINE_RE.search(clean):
         return False
     if not re.search(r"(?:^|[\s(])(?:D|R)?\.?\d", clean):
         return False
@@ -1681,7 +1686,7 @@ def extract_candidates_with_profile(pdf_path: Path, profile: AnalysisProfile) ->
                     text = str(word.get("text", "")).strip()
                     compact_check = re.sub(r"\s+", "", text)
                     if re.match(r"^[0-9]{1,2}$", compact_check):
-                        margin = page.height * 0.03
+                        margin = page.height * 0.07
                         if word["top"] <= margin or word["bottom"] >= page.height - margin:
                             continue
                     neighbor_text = nearby_context(ordered_line, word)
