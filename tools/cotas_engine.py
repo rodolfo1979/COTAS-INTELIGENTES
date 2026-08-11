@@ -1992,13 +1992,15 @@ def choose_label_position(
     center_x = candidate.x + candidate.width / 2
     center_top_y = candidate.y + candidate.height / 2
     expanded_box = expanded_horizontal_source_box(candidate, text_boxes)
+    is_manual_click = "click add" in candidate.reason
+    source_padding = 8.0 if is_manual_click else 3.0
     source_box = (
-        expanded_box[0] - 3,
-        expanded_box[1] - 3,
-        expanded_box[2] + 3,
-        expanded_box[3] + 3,
+        expanded_box[0] - source_padding,
+        expanded_box[1] - source_padding,
+        expanded_box[2] + source_padding,
+        expanded_box[3] + source_padding,
     )
-    rings = [9, 12, 16, 22, 30, 40]
+    rings = [14, 18, 24, 32, 42, 54] if is_manual_click else [9, 12, 16, 22, 30, 40]
     directions = [
         (1.0, -0.8),
         (-1.0, -0.8),
@@ -2032,7 +2034,10 @@ def choose_label_position(
             candidate_points.append((center_x, candidate.y + candidate.height + gap, gap, "rotated_axis_below"))
 
     min_horizontal_gap = 18 if is_rotated_dimension else max(12.0, label_half_width + 6.0)
-    for gap in [8, 11, 15, 21, 30, 40]:
+    if is_manual_click:
+        min_horizontal_gap = max(min_horizontal_gap, label_half_width + 18.0)
+    horizontal_gaps = [18, 24, 32, 44, 58] if is_manual_click else [8, 11, 15, 21, 30, 40]
+    for gap in horizontal_gaps:
         if gap < min_horizontal_gap:
             continue
         candidate_points.append((expanded_box[0] - gap, center_top_y, gap, "horizontal"))
@@ -2065,15 +2070,16 @@ def choose_label_position(
                 top_y + label_half_height + 2,
             )
 
-            text_overlap = sum(intersection_area(label_box, box, padding=3.0) for box in label_text_boxes)
+            text_padding = 7.0 if is_manual_click else 3.0
+            text_overlap = sum(intersection_area(label_box, box, padding=text_padding) for box in label_text_boxes)
             label_overlap = sum(intersection_area(label_box, box, padding=4.0) for box in placed_label_boxes)
-            source_overlap = intersection_area(label_box, source_box, padding=2.0)
-            text_hits = sum(1 for box in label_text_boxes if boxes_intersect(label_box, box, padding=3.0))
+            source_overlap = intersection_area(label_box, source_box, padding=4.0 if is_manual_click else 2.0)
+            text_hits = sum(1 for box in label_text_boxes if boxes_intersect(label_box, box, padding=text_padding))
             label_hits = sum(1 for box in placed_label_boxes if boxes_intersect(label_box, box, padding=4.0))
             forbidden_hits = sum(
                 1 for box in forbidden_label_boxes if boxes_intersect(label_box, box, padding=4.0)
             )
-            source_hit = boxes_intersect(label_box, source_box, padding=2.0)
+            source_hit = boxes_intersect(label_box, source_box, padding=4.0 if is_manual_click else 2.0)
             graphic_hits = sum(1 for box in graphic_boxes if boxes_intersect(label_box, box, padding=2.0))
 
             source_pdf_box = (
@@ -2090,7 +2096,7 @@ def choose_label_position(
             leader_start = (line_start_x, page_height - line_start_pdf_y)
             leader_end = (x, top_y)
             leader_length = ((leader_end[0] - leader_start[0]) ** 2 + (leader_end[1] - leader_start[1]) ** 2) ** 0.5
-            max_leader = 56 if is_rotated_dimension else 48
+            max_leader = 72 if is_manual_click else 56 if is_rotated_dimension else 48
             if forbidden_hits:
                 continue
             fallback_score_candidate = leader_length * 1000 + text_hits * 9000 + label_hits * 15000 + source_overlap * 200
@@ -2119,10 +2125,10 @@ def choose_label_position(
             edge_bonus = 0
             if x < page_width * 0.12 or x > page_width * 0.88 or top_y < page_height * 0.12 or top_y > page_height * 0.88:
                 edge_bonus = -120
-            min_leader = 12 if is_rotated_dimension else 9
+            min_leader = 18 if is_manual_click else 12 if is_rotated_dimension else 9
             short_leader_penalty = (min_leader - leader_length) * 350 if leader_length < min_leader else 0
-            soft_max_leader = 34 if placement_mode == "horizontal" else 42
-            hard_max_leader = 58 if placement_mode == "horizontal" else 68
+            soft_max_leader = 46 if is_manual_click and placement_mode == "horizontal" else 34 if placement_mode == "horizontal" else 42
+            hard_max_leader = 76 if is_manual_click and placement_mode == "horizontal" else 58 if placement_mode == "horizontal" else 68
             long_leader_penalty = 0
             if leader_length > soft_max_leader:
                 long_leader_penalty += (leader_length - soft_max_leader) * 2200

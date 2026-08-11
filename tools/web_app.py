@@ -1060,11 +1060,15 @@ class App(BaseHTTPRequestHandler):
   function drawMarker(img, candidate) {{
     const stage = img.closest(".mark-stage");
     if (!stage) return;
+    const pageWidth = Number(img.dataset.width);
+    const pageHeight = Number(img.dataset.height);
+    const labelX = Math.min(Math.max(candidate.x + candidate.width + 18, 8), pageWidth - 8);
+    const labelY = Math.min(Math.max(candidate.y + candidate.height / 2, 8), pageHeight - 8);
     const pin = document.createElement("span");
     pin.className = "mark-pin";
     pin.textContent = candidate.number;
-    pin.style.left = `${{((candidate.x + candidate.width / 2) / Number(img.dataset.width)) * 100}}%`;
-    pin.style.top = `${{((candidate.y + candidate.height / 2) / Number(img.dataset.height)) * 100}}%`;
+    pin.style.left = `${{(labelX / pageWidth) * 100}}%`;
+    pin.style.top = `${{(labelY / pageHeight) * 100}}%`;
     stage.appendChild(pin);
   }}
 
