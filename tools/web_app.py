@@ -1062,8 +1062,10 @@ class App(BaseHTTPRequestHandler):
     if (!stage) return;
     const pageWidth = Number(img.dataset.width);
     const pageHeight = Number(img.dataset.height);
-    const labelX = Math.min(Math.max(candidate.x + candidate.width + 18, 8), pageWidth - 8);
-    const labelY = Math.min(Math.max(candidate.y + candidate.height / 2, 8), pageHeight - 8);
+    const rawX = candidate.click_x ?? (candidate.x + candidate.width / 2);
+    const rawY = candidate.click_y ?? (candidate.y + candidate.height / 2);
+    const labelX = Math.min(Math.max(rawX, 8), pageWidth - 8);
+    const labelY = Math.min(Math.max(rawY, 8), pageHeight - 8);
     const pin = document.createElement("span");
     pin.className = "mark-pin";
     pin.textContent = candidate.number;
@@ -1162,6 +1164,8 @@ class App(BaseHTTPRequestHandler):
             height=box["height"],
             confidence=1.0,
             reason="click add",
+            click_x=x,
+            click_y=y,
         )
         candidates.append(candidate)
         candidates.sort(key=lambda item: item.number)
@@ -1270,6 +1274,8 @@ class App(BaseHTTPRequestHandler):
                 height=float(item.get("height", 0)),
                 confidence=float(item.get("confidence", 0)),
                 reason=str(item.get("reason", "")),
+                click_x=float(item["click_x"]) if item.get("click_x") is not None else None,
+                click_y=float(item["click_y"]) if item.get("click_y") is not None else None,
             )
             for item in payload
         ]

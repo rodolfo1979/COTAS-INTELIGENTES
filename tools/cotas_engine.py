@@ -85,6 +85,8 @@ class DimensionCandidate:
     height: float
     confidence: float
     reason: str
+    click_x: float | None = None
+    click_y: float | None = None
 
 
 @dataclass(frozen=True)
@@ -1991,6 +1993,11 @@ def choose_label_position(
     forbidden_label_boxes = forbidden_label_boxes or []
     center_x = candidate.x + candidate.width / 2
     center_top_y = candidate.y + candidate.height / 2
+    if "click add" in candidate.reason and candidate.click_x is not None and candidate.click_y is not None:
+        click_x = clamp(float(candidate.click_x), label_half_width + 4, page_width - label_half_width - 4)
+        click_top_y = clamp(float(candidate.click_y), label_half_height + 4, page_height - label_half_height - 4)
+        return click_x, page_height - click_top_y
+
     expanded_box = expanded_horizontal_source_box(candidate, text_boxes)
     is_manual_click = "click add" in candidate.reason
     source_padding = 8.0 if is_manual_click else 3.0
@@ -2296,6 +2303,8 @@ def load_candidates(path: Path) -> list[DimensionCandidate]:
                 height=float(item.get("height", 0)),
                 confidence=float(item.get("confidence", 0)),
                 reason=str(item.get("reason", "manual")),
+                click_x=float(item["click_x"]) if item.get("click_x") is not None else None,
+                click_y=float(item["click_y"]) if item.get("click_y") is not None else None,
             )
         )
     candidates.sort(key=lambda item: (item.page, item.number))
