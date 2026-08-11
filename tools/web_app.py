@@ -44,7 +44,7 @@ def writable_storage_path() -> Path:
 STORAGE = writable_storage_path()
 UPLOADS = STORAGE / "uploads"
 CLIENTS_FILE = ROOT / "data" / "clients.json"
-ENGINE_VERSION = "2026-08-11-click-add-on-numbered-pdf"
+ENGINE_VERSION = "2026-08-11-click-add-undo"
 AUTH_USER = os.getenv("COTAS_ADMIN_USER", "admin")
 AUTH_PASSWORD = os.getenv("COTAS_ADMIN_PASSWORD", "")
 AUTH_SECRET = os.getenv("COTAS_SECRET_KEY", "")
@@ -482,6 +482,8 @@ class App(BaseHTTPRequestHandler):
             self.handle_upload()
         elif parsed.path.startswith("/edit/"):
             self.handle_edit(unquote(parsed.path.removeprefix("/edit/")))
+        elif parsed.path.startswith("/mark/") and parsed.path.endswith("/undo"):
+            self.handle_mark_undo(unquote(parsed.path.removeprefix("/mark/").removesuffix("/undo")))
         elif parsed.path.startswith("/mark/"):
             self.handle_mark(unquote(parsed.path.removeprefix("/mark/")))
         elif parsed.path == "/delete-selected":
@@ -959,6 +961,7 @@ class App(BaseHTTPRequestHandler):
   <p class="muted">Esta vista muestra el PDF ya numerado. Haga clic sobre el texto de la cota faltante; el sistema tomara el texto cercano del plano original, asignara el siguiente numero y regenerara el PDF y el Excel.</p>
   <div class="actions">
     <a class="button secondary" href="/job/{quote(job_id)}">Volver al trabajo</a>
+    <button class="button danger" form="undo-mark-form" type="submit">Deshacer ultimo agregado</button>
   </div>
 </section>
 <form id="mark-form" method="post" action="/mark/{quote(job_id)}">
@@ -966,6 +969,7 @@ class App(BaseHTTPRequestHandler):
   <input type="hidden" name="x" id="mark-x">
   <input type="hidden" name="y" id="mark-y">
 </form>
+<form id="undo-mark-form" method="post" action="/mark/{quote(job_id)}/undo"></form>
 {page_blocks}
 <script>
   document.querySelectorAll(".mark-page").forEach((img) => {{
@@ -975,9 +979,6 @@ class App(BaseHTTPRequestHandler):
       const pageHeight = Number(img.dataset.height);
       const x = (event.clientX - rect.left) / rect.width * pageWidth;
       const y = (event.clientY - rect.top) / rect.height * pageHeight;
-      if (!confirm("Agregar la cota mas cercana al clic?")) {{
-        return;
-      }}
       document.getElementById("mark-page").value = img.dataset.page;
       document.getElementById("mark-x").value = x.toFixed(3);
       document.getElementById("mark-y").value = y.toFixed(3);
@@ -1029,6 +1030,25 @@ class App(BaseHTTPRequestHandler):
         candidates.sort(key=lambda item: item.number)
         self.save_job_candidates(job, candidates)
         self.show_mark(job_id, f"Agregada cota #{next_number}: {text}")
+
+    def handle_mark_undo(self, job_id: str) -> None:
+        job = self.find_job(job_id)
+        if not job:
+            self.send_html("No encontrado", "<section><h2>Trabajo no encontrado</h2></section>", 404)
+            return
+
+        candidates = self.load_job_candidates(job)
+        click_candidates = [candidate for candidate in candidates if candidate.reason == "click add"]
+        if not click_candidates:
+            self.show_mark(job_id, "No hay cotas agregadas con mouse para deshacer.")
+            return
+
+        last_added = max(click_candidates, key=lambda candidate: candidate.number)
+        candidates = [candidate for candidate in candidates if candidate is not last_added]
+        for number, candidate in enumerate(sorted(candidates, key=lambda item: item.number), start=1):
+            candidate.number = number
+        self.save_job_candidates(job, candidates)
+        self.show_mark(job_id, f"Se deshizo la cota #{last_added.number}: {last_added.text}")
 
     def handle_edit(self, job_id: str) -> None:
         import cgi
