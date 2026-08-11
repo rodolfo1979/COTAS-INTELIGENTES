@@ -16,7 +16,16 @@ from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 
 import pdfplumber
 
-from cotas_engine import DimensionCandidate, analyze_command, build_parser, draw_numbered_overlay, generate_tolerance_workbook, init_history
+from cotas_engine import (
+    DimensionCandidate,
+    analyze_command,
+    build_parser,
+    draw_numbered_overlay,
+    expanded_dimension_phrase,
+    generate_tolerance_workbook,
+    init_history,
+    looks_like_dimension,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,7 +53,7 @@ def writable_storage_path() -> Path:
 STORAGE = writable_storage_path()
 UPLOADS = STORAGE / "uploads"
 CLIENTS_FILE = ROOT / "data" / "clients.json"
-ENGINE_VERSION = "2026-08-11-click-add-undo"
+ENGINE_VERSION = "2026-08-11-click-add-faster-tolerant"
 AUTH_USER = os.getenv("COTAS_ADMIN_USER", "admin")
 AUTH_PASSWORD = os.getenv("COTAS_ADMIN_PASSWORD", "")
 AUTH_SECRET = os.getenv("COTAS_SECRET_KEY", "")
@@ -148,6 +157,16 @@ def union_word_boxes(words: list[dict]) -> dict[str, float]:
     return {"x": x0, "y": top, "width": x1 - x0, "height": bottom - top}
 
 
+def point_distance_to_box(x: float, y: float, box: dict[str, float]) -> float:
+    left = float(box["x"])
+    top = float(box["y"])
+    right = left + float(box["width"])
+    bottom = top + float(box["height"])
+    dx = max(left - x, 0.0, x - right)
+    dy = max(top - y, 0.0, y - bottom)
+    return (dx * dx + dy * dy) ** 0.5
+
+
 def nearest_pdf_text(original_pdf: Path, page_number: int, x: float, y: float) -> tuple[str, dict[str, float]] | None:
     with pdfplumber.open(str(original_pdf)) as pdf:
         if page_number < 1 or page_number > len(pdf.pages):
@@ -161,41 +180,92 @@ def nearest_pdf_text(original_pdf: Path, page_number: int, x: float, y: float) -
     if not words:
         return None
 
+    scored: list[tuple[float, float, str, dict[str, float]]] = []
+    seen: set[tuple[int, str, int, int]] = set()
+
+    rotated_words = [word for word in words if word.get("upright") is False]
+    for index, word in enumerate(rotated_words):
+        x_center = (float(word["x0"]) + float(word["x1"])) / 2
+        column = [
+            other
+            for other in rotated_words
+            if abs(((float(other["x0"]) + float(other["x1"])) / 2) - x_center) <= 8
+        ]
+        ordered_column = sorted(column, key=lambda item: float(item["top"]))
+        try:
+            selected_index = ordered_column.index(word)
+        except ValueError:
+            selected_index = 0
+
+        selected = [ordered_column[selected_index]]
+        cursor = selected_index - 1
+        while cursor >= 0:
+            gap = float(selected[0]["top"]) - float(ordered_column[cursor]["bottom"])
+            if gap > 24 or len(selected) >= 4:
+                break
+            selected.insert(0, ordered_column[cursor])
+            cursor -= 1
+
+        cursor = selected_index + 1
+        while cursor < len(ordered_column):
+            gap = float(ordered_column[cursor]["top"]) - float(selected[-1]["bottom"])
+            if gap > 24 or len(selected) >= 4:
+                break
+            selected.append(ordered_column[cursor])
+            cursor += 1
+
+        selected = sorted(selected, key=lambda item: float(item["top"]), reverse=True)
+        text = " ".join(str(item.get("text", ""))[::-1].strip() for item in selected if str(item.get("text", "")).strip())
+        box = union_word_boxes(selected)
+        ok, confidence, _ = looks_like_dimension(text, text, text)
+        distance = point_distance_to_box(x, y, box)
+        if ok and distance <= 95:
+            key = (index, text, round(box["x"]), round(box["y"]))
+            if key not in seen:
+                seen.add(key)
+                scored.append((distance - (confidence * 24), confidence, text, box))
+
+    lines: list[list[dict]] = []
+    upright_words = [word for word in words if word.get("upright") is not False]
+    for word in sorted(upright_words, key=lambda item: (float(item.get("top", 0)), float(item.get("x0", 0)))):
+        if not lines or abs(float(lines[-1][0].get("top", 0)) - float(word.get("top", 0))) >= 6:
+            lines.append([word])
+        else:
+            lines[-1].append(word)
+
+    for line_index, line_words in enumerate(lines):
+        ordered = sorted(line_words, key=lambda word: float(word["x0"]))
+        line_text = " ".join(str(word.get("text", "")).strip() for word in ordered if str(word.get("text", "")).strip())
+        for index, word in enumerate(ordered):
+            phrase, box, _ = expanded_dimension_phrase(ordered, index)
+            phrase = phrase.strip()
+            if not phrase:
+                continue
+
+            key = (line_index, phrase, round(box["x"]), round(box["y"]))
+            if key in seen:
+                continue
+            seen.add(key)
+
+            ok, confidence, _ = looks_like_dimension(phrase, line_text, line_text)
+            distance = point_distance_to_box(x, y, box)
+            if not ok or distance > 110:
+                continue
+            scored.append((distance - (confidence * 18), confidence, phrase, box))
+
+    if scored:
+        _, _, text, box = min(scored, key=lambda item: item[0])
+        return text, box
+
     def center(word: dict) -> tuple[float, float]:
         return ((float(word["x0"]) + float(word["x1"])) / 2, (float(word["top"]) + float(word["bottom"])) / 2)
 
     nearest = min(words, key=lambda word: (center(word)[0] - x) ** 2 + (center(word)[1] - y) ** 2)
     nearest_x, nearest_y = center(nearest)
-    if ((nearest_x - x) ** 2 + (nearest_y - y) ** 2) ** 0.5 > 46:
+    if ((nearest_x - x) ** 2 + (nearest_y - y) ** 2) ** 0.5 > 78:
         return None
 
-    same_line = [
-        word
-        for word in words
-        if abs(float(word.get("top", 0)) - float(nearest.get("top", 0))) < 4
-    ]
-    ordered = sorted(same_line, key=lambda word: float(word["x0"]))
-    nearest_index = ordered.index(nearest)
-    selected = [nearest]
-
-    cursor = nearest_index - 1
-    while cursor >= 0:
-        gap = float(selected[0]["x0"]) - float(ordered[cursor]["x1"])
-        if gap > 35:
-            break
-        selected.insert(0, ordered[cursor])
-        cursor -= 1
-
-    cursor = nearest_index + 1
-    while cursor < len(ordered):
-        gap = float(ordered[cursor]["x0"]) - float(selected[-1]["x1"])
-        if gap > 35:
-            break
-        selected.append(ordered[cursor])
-        cursor += 1
-
-    text = " ".join(str(word.get("text", "")).strip() for word in selected if str(word.get("text", "")).strip())
-    return text, union_word_boxes(selected)
+    return str(nearest.get("text", "")).strip(), union_word_boxes([nearest])
 
 
 def auth_configured() -> bool:
@@ -284,7 +354,10 @@ def layout(title: str, body: str, authenticated: bool = True) -> bytes:
     .ok {{ color: var(--green); font-weight: 700; }}
     iframe {{ width: 100%; height: 760px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }}
     .mark-wrap {{ overflow: auto; border: 1px solid var(--line); background: #fff; max-height: 820px; }}
+    .mark-stage {{ position: relative; width: 100%; }}
     .mark-page {{ display: block; width: 100%; height: auto; cursor: crosshair; }}
+    .mark-pin {{ position: absolute; color: var(--accent); font-size: 11px; font-weight: 700; line-height: 1; transform: translate(-50%, -50%); pointer-events: none; }}
+    .mark-status {{ min-height: 18px; margin-top: 8px; }}
     @media (max-width: 820px) {{
       .grid {{ grid-template-columns: 1fr; }}
       .stats {{ grid-template-columns: 1fr; }}
@@ -948,7 +1021,9 @@ class App(BaseHTTPRequestHandler):
 <section>
   <h2>Pagina {page['page']}</h2>
   <div class="mark-wrap">
-    <img class="mark-page" src="/file/{quote(page['image'])}" data-page="{page['page']}" data-width="{page['width']}" data-height="{page['height']}" alt="Pagina {page['page']}">
+    <div class="mark-stage">
+      <img class="mark-page" src="/file/{quote(page['image'])}" data-page="{page['page']}" data-width="{page['width']}" data-height="{page['height']}" alt="Pagina {page['page']}">
+    </div>
   </div>
 </section>
 """
@@ -959,6 +1034,7 @@ class App(BaseHTTPRequestHandler):
   <h2>Agregar cotas faltantes con mouse</h2>
   {notice}
   <p class="muted">Esta vista muestra el PDF ya numerado. Haga clic sobre el texto de la cota faltante; el sistema tomara el texto cercano del plano original, asignara el siguiente numero y regenerara el PDF y el Excel.</p>
+  <p class="muted mark-status" id="mark-status"></p>
   <div class="actions">
     <a class="button secondary" href="/job/{quote(job_id)}">Volver al trabajo</a>
     <button class="button danger" form="undo-mark-form" type="submit">Deshacer ultimo agregado</button>
@@ -972,8 +1048,32 @@ class App(BaseHTTPRequestHandler):
 <form id="undo-mark-form" method="post" action="/mark/{quote(job_id)}/undo"></form>
 {page_blocks}
 <script>
+  let markBusy = false;
+  const statusNode = document.getElementById("mark-status");
+  const form = document.getElementById("mark-form");
+
+  function setStatus(message, isError = false) {{
+    statusNode.textContent = message;
+    statusNode.style.color = isError ? "#b42318" : "#157347";
+  }}
+
+  function drawMarker(img, candidate) {{
+    const stage = img.closest(".mark-stage");
+    if (!stage) return;
+    const pin = document.createElement("span");
+    pin.className = "mark-pin";
+    pin.textContent = candidate.number;
+    pin.style.left = `${{((candidate.x + candidate.width / 2) / Number(img.dataset.width)) * 100}}%`;
+    pin.style.top = `${{((candidate.y + candidate.height / 2) / Number(img.dataset.height)) * 100}}%`;
+    stage.appendChild(pin);
+  }}
+
   document.querySelectorAll(".mark-page").forEach((img) => {{
-    img.addEventListener("click", (event) => {{
+    img.addEventListener("click", async (event) => {{
+      if (markBusy) {{
+        setStatus("Espere un momento, guardando la cota anterior...");
+        return;
+      }}
       const rect = img.getBoundingClientRect();
       const pageWidth = Number(img.dataset.width);
       const pageHeight = Number(img.dataset.height);
@@ -982,7 +1082,29 @@ class App(BaseHTTPRequestHandler):
       document.getElementById("mark-page").value = img.dataset.page;
       document.getElementById("mark-x").value = x.toFixed(3);
       document.getElementById("mark-y").value = y.toFixed(3);
-      document.getElementById("mark-form").submit();
+      markBusy = true;
+      setStatus("Guardando nueva cota...");
+      try {{
+        const response = await fetch(form.action, {{
+          method: "POST",
+          headers: {{
+            "Content-Type": "application/x-www-form-urlencoded",
+            "X-Requested-With": "fetch",
+          }},
+          body: new URLSearchParams(new FormData(form)),
+        }});
+        const result = await response.json();
+        if (!response.ok || !result.ok) {{
+          setStatus(result.message || "No se pudo agregar la cota.", true);
+          return;
+        }}
+        drawMarker(img, result.candidate);
+        setStatus(result.message);
+      }} catch (error) {{
+        setStatus("No se pudo guardar por conexion. Intente de nuevo.", true);
+      }} finally {{
+        markBusy = false;
+      }}
     }});
   }});
 </script>
@@ -991,8 +1113,12 @@ class App(BaseHTTPRequestHandler):
 
     def handle_mark(self, job_id: str) -> None:
         job = self.find_job(job_id)
+        wants_json = self.headers.get("X-Requested-With") == "fetch"
         if not job:
-            self.send_html("No encontrado", "<section><h2>Trabajo no encontrado</h2></section>", 404)
+            if wants_json:
+                self.send_json({"ok": False, "message": "Trabajo no encontrado."}, 404)
+            else:
+                self.send_html("No encontrado", "<section><h2>Trabajo no encontrado</h2></section>", 404)
             return
 
         length = int(self.headers.get("Content-Length", "0") or "0")
@@ -1003,33 +1129,50 @@ class App(BaseHTTPRequestHandler):
             x = float(form.get("x", ["0"])[0])
             y = float(form.get("y", ["0"])[0])
         except ValueError:
-            self.show_mark(job_id, "No se pudo leer la posicion del clic.")
+            message = "No se pudo leer la posicion del clic."
+            if wants_json:
+                self.send_json({"ok": False, "message": message}, 422)
+            else:
+                self.show_mark(job_id, message)
             return
 
         found = nearest_pdf_text(Path(job["original_pdf"]), page, x, y)
         if not found:
-            self.show_mark(job_id, "No se encontro texto cerca del clic. Intente tocar directamente sobre la cota.")
+            message = "No se encontro una cota cerca del clic. Toque el texto, la flecha o la linea mas cercana a esa cota."
+            if wants_json:
+                self.send_json({"ok": False, "message": message}, 422)
+            else:
+                self.show_mark(job_id, message)
             return
 
         text, box = found
         candidates = self.load_job_candidates(job)
         next_number = max([candidate.number for candidate in candidates], default=0) + 1
-        candidates.append(
-            DimensionCandidate(
-                number=next_number,
-                page=page,
-                text=text,
-                x=box["x"],
-                y=box["y"],
-                width=box["width"],
-                height=box["height"],
-                confidence=1.0,
-                reason="click add",
-            )
+        candidate = DimensionCandidate(
+            number=next_number,
+            page=page,
+            text=text,
+            x=box["x"],
+            y=box["y"],
+            width=box["width"],
+            height=box["height"],
+            confidence=1.0,
+            reason="click add",
         )
+        candidates.append(candidate)
         candidates.sort(key=lambda item: item.number)
         self.save_job_candidates(job, candidates)
-        self.show_mark(job_id, f"Agregada cota #{next_number}: {text}")
+        message = f"Agregada cota #{next_number}: {text}"
+        if wants_json:
+            self.send_json(
+                {
+                    "ok": True,
+                    "message": message,
+                    "candidate": candidate.__dict__,
+                }
+            )
+        else:
+            self.show_mark(job_id, message)
 
     def handle_mark_undo(self, job_id: str) -> None:
         job = self.find_job(job_id)
