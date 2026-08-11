@@ -44,7 +44,7 @@ def writable_storage_path() -> Path:
 STORAGE = writable_storage_path()
 UPLOADS = STORAGE / "uploads"
 CLIENTS_FILE = ROOT / "data" / "clients.json"
-ENGINE_VERSION = "2026-08-11-click-add-missing-cotas"
+ENGINE_VERSION = "2026-08-11-click-add-on-numbered-pdf"
 AUTH_USER = os.getenv("COTAS_ADMIN_USER", "admin")
 AUTH_PASSWORD = os.getenv("COTAS_ADMIN_PASSWORD", "")
 AUTH_SECRET = os.getenv("COTAS_SECRET_KEY", "")
@@ -108,12 +108,12 @@ def find_pdftoppm() -> str:
 
 
 def ensure_mark_images(job: dict) -> list[dict]:
-    original_pdf = Path(job["original_pdf"])
-    output_dir = original_pdf.parent / "mark_pages"
+    numbered_pdf = Path(job["numbered_pdf"])
+    output_dir = numbered_pdf.parent / "mark_numbered_pages"
     output_dir.mkdir(parents=True, exist_ok=True)
     prefix = output_dir / "page"
 
-    with pdfplumber.open(str(original_pdf)) as pdf:
+    with pdfplumber.open(str(numbered_pdf)) as pdf:
         metadata = [
             {
                 "page": index,
@@ -124,10 +124,15 @@ def ensure_mark_images(job: dict) -> list[dict]:
             for index, page in enumerate(pdf.pages, start=1)
         ]
 
-    missing = [item for item in metadata if not Path(item["image"]).exists()]
-    if missing:
+    pdf_mtime = numbered_pdf.stat().st_mtime
+    stale = [
+        item
+        for item in metadata
+        if not Path(item["image"]).exists() or Path(item["image"]).stat().st_mtime < pdf_mtime
+    ]
+    if stale:
         subprocess.run(
-            [find_pdftoppm(), "-png", "-r", "144", str(original_pdf), str(prefix)],
+            [find_pdftoppm(), "-png", "-r", "144", str(numbered_pdf), str(prefix)],
             check=True,
             capture_output=True,
             text=True,
@@ -951,7 +956,7 @@ class App(BaseHTTPRequestHandler):
 <section>
   <h2>Agregar cotas faltantes con mouse</h2>
   {notice}
-  <p class="muted">Haga clic sobre el texto de la cota faltante. El sistema tomara el texto cercano, asignara el siguiente numero y regenerara el PDF y el Excel.</p>
+  <p class="muted">Esta vista muestra el PDF ya numerado. Haga clic sobre el texto de la cota faltante; el sistema tomara el texto cercano del plano original, asignara el siguiente numero y regenerara el PDF y el Excel.</p>
   <div class="actions">
     <a class="button secondary" href="/job/{quote(job_id)}">Volver al trabajo</a>
   </div>
