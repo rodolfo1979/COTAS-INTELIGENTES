@@ -6,12 +6,15 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
+
+import pdfplumber
 
 from cotas_engine import DimensionCandidate, analyze_command, build_parser, draw_numbered_overlay, generate_tolerance_workbook, init_history
 
@@ -41,7 +44,7 @@ def writable_storage_path() -> Path:
 STORAGE = writable_storage_path()
 UPLOADS = STORAGE / "uploads"
 CLIENTS_FILE = ROOT / "data" / "clients.json"
-ENGINE_VERSION = "2026-08-09-bulk-delete-admin"
+ENGINE_VERSION = "2026-08-11-click-add-missing-cotas"
 AUTH_USER = os.getenv("COTAS_ADMIN_USER", "admin")
 AUTH_PASSWORD = os.getenv("COTAS_ADMIN_PASSWORD", "")
 AUTH_SECRET = os.getenv("COTAS_SECRET_KEY", "")
@@ -94,6 +97,100 @@ def display_client(value: object) -> str:
 def display_date(value: object) -> str:
     text = str(value or "").strip()
     return text[:10] if len(text) >= 10 else text
+
+
+def find_pdftoppm() -> str:
+    bundled = Path.home() / ".cache" / "codex-runtimes" / "codex-primary-runtime" / "dependencies" / "native" / "poppler" / "Library" / "bin" / "pdftoppm.exe"
+    if bundled.exists():
+        return str(bundled)
+    found = shutil.which("pdftoppm")
+    return found if found else "pdftoppm"
+
+
+def ensure_mark_images(job: dict) -> list[dict]:
+    original_pdf = Path(job["original_pdf"])
+    output_dir = original_pdf.parent / "mark_pages"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    prefix = output_dir / "page"
+
+    with pdfplumber.open(str(original_pdf)) as pdf:
+        metadata = [
+            {
+                "page": index,
+                "width": float(page.width),
+                "height": float(page.height),
+                "image": str(output_dir / f"page-{index}.png"),
+            }
+            for index, page in enumerate(pdf.pages, start=1)
+        ]
+
+    missing = [item for item in metadata if not Path(item["image"]).exists()]
+    if missing:
+        subprocess.run(
+            [find_pdftoppm(), "-png", "-r", "144", str(original_pdf), str(prefix)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    return metadata
+
+
+def union_word_boxes(words: list[dict]) -> dict[str, float]:
+    x0 = min(float(word["x0"]) for word in words)
+    top = min(float(word["top"]) for word in words)
+    x1 = max(float(word["x1"]) for word in words)
+    bottom = max(float(word["bottom"]) for word in words)
+    return {"x": x0, "y": top, "width": x1 - x0, "height": bottom - top}
+
+
+def nearest_pdf_text(original_pdf: Path, page_number: int, x: float, y: float) -> tuple[str, dict[str, float]] | None:
+    with pdfplumber.open(str(original_pdf)) as pdf:
+        if page_number < 1 or page_number > len(pdf.pages):
+            return None
+        words = pdf.pages[page_number - 1].extract_words(
+            keep_blank_chars=False,
+            use_text_flow=False,
+            extra_attrs=[],
+        )
+
+    if not words:
+        return None
+
+    def center(word: dict) -> tuple[float, float]:
+        return ((float(word["x0"]) + float(word["x1"])) / 2, (float(word["top"]) + float(word["bottom"])) / 2)
+
+    nearest = min(words, key=lambda word: (center(word)[0] - x) ** 2 + (center(word)[1] - y) ** 2)
+    nearest_x, nearest_y = center(nearest)
+    if ((nearest_x - x) ** 2 + (nearest_y - y) ** 2) ** 0.5 > 46:
+        return None
+
+    same_line = [
+        word
+        for word in words
+        if abs(float(word.get("top", 0)) - float(nearest.get("top", 0))) < 4
+    ]
+    ordered = sorted(same_line, key=lambda word: float(word["x0"]))
+    nearest_index = ordered.index(nearest)
+    selected = [nearest]
+
+    cursor = nearest_index - 1
+    while cursor >= 0:
+        gap = float(selected[0]["x0"]) - float(ordered[cursor]["x1"])
+        if gap > 35:
+            break
+        selected.insert(0, ordered[cursor])
+        cursor -= 1
+
+    cursor = nearest_index + 1
+    while cursor < len(ordered):
+        gap = float(ordered[cursor]["x0"]) - float(selected[-1]["x1"])
+        if gap > 35:
+            break
+        selected.append(ordered[cursor])
+        cursor += 1
+
+    text = " ".join(str(word.get("text", "")).strip() for word in selected if str(word.get("text", "")).strip())
+    return text, union_word_boxes(selected)
 
 
 def auth_configured() -> bool:
@@ -181,6 +278,8 @@ def layout(title: str, body: str, authenticated: bool = True) -> bytes:
     .muted {{ color: var(--muted); font-size: 13px; }}
     .ok {{ color: var(--green); font-weight: 700; }}
     iframe {{ width: 100%; height: 760px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }}
+    .mark-wrap {{ overflow: auto; border: 1px solid var(--line); background: #fff; max-height: 820px; }}
+    .mark-page {{ display: block; width: 100%; height: auto; cursor: crosshair; }}
     @media (max-width: 820px) {{
       .grid {{ grid-template-columns: 1fr; }}
       .stats {{ grid-template-columns: 1fr; }}
@@ -355,6 +454,8 @@ class App(BaseHTTPRequestHandler):
             self.show_job(unquote(parsed.path.removeprefix("/job/")))
         elif parsed.path.startswith("/edit/"):
             self.show_edit(unquote(parsed.path.removeprefix("/edit/")))
+        elif parsed.path.startswith("/mark/"):
+            self.show_mark(unquote(parsed.path.removeprefix("/mark/")))
         elif parsed.path.startswith("/view/"):
             parts = parsed.path.removeprefix("/view/").split("/", 1)
             if len(parts) == 2:
@@ -376,6 +477,8 @@ class App(BaseHTTPRequestHandler):
             self.handle_upload()
         elif parsed.path.startswith("/edit/"):
             self.handle_edit(unquote(parsed.path.removeprefix("/edit/")))
+        elif parsed.path.startswith("/mark/"):
+            self.handle_mark(unquote(parsed.path.removeprefix("/mark/")))
         elif parsed.path == "/delete-selected":
             self.handle_delete_selected()
         elif parsed.path.startswith("/delete/"):
@@ -730,6 +833,7 @@ class App(BaseHTTPRequestHandler):
     <a class="button" href="/file/{quote(job['numbered_pdf'])}">Descargar PDF numerado</a>
     {tolerance_button}
     <a class="button secondary" href="/edit/{quote(job['id'])}">Revisar cotas</a>
+    <a class="button secondary" href="/mark/{quote(job['id'])}">Agregar faltantes con mouse</a>
     <a class="button secondary" href="/view/{quote(job['id'])}/original">Ver original</a>
     <a class="button secondary" href="/view/{quote(job['id'])}/json">Ver JSON</a>
   </div>
@@ -820,6 +924,107 @@ class App(BaseHTTPRequestHandler):
 """
         self.send_html("Revisar cotas", body)
 
+    def show_mark(self, job_id: str, message: str = "") -> None:
+        job = self.find_job(job_id)
+        if not job:
+            self.send_html("No encontrado", "<section><h2>Trabajo no encontrado</h2></section>", 404)
+            return
+        try:
+            pages = ensure_mark_images(job)
+        except Exception as exc:
+            self.send_html("Error", f"<section><h2>No se pudo preparar el plano</h2><p>{esc(exc)}</p></section>", 500)
+            return
+
+        notice = f'<p class="ok">{esc(message)}</p>' if message else ""
+        page_blocks = "".join(
+            f"""
+<section>
+  <h2>Pagina {page['page']}</h2>
+  <div class="mark-wrap">
+    <img class="mark-page" src="/file/{quote(page['image'])}" data-page="{page['page']}" data-width="{page['width']}" data-height="{page['height']}" alt="Pagina {page['page']}">
+  </div>
+</section>
+"""
+            for page in pages
+        )
+        body = f"""
+<section>
+  <h2>Agregar cotas faltantes con mouse</h2>
+  {notice}
+  <p class="muted">Haga clic sobre el texto de la cota faltante. El sistema tomara el texto cercano, asignara el siguiente numero y regenerara el PDF y el Excel.</p>
+  <div class="actions">
+    <a class="button secondary" href="/job/{quote(job_id)}">Volver al trabajo</a>
+  </div>
+</section>
+<form id="mark-form" method="post" action="/mark/{quote(job_id)}">
+  <input type="hidden" name="page" id="mark-page">
+  <input type="hidden" name="x" id="mark-x">
+  <input type="hidden" name="y" id="mark-y">
+</form>
+{page_blocks}
+<script>
+  document.querySelectorAll(".mark-page").forEach((img) => {{
+    img.addEventListener("click", (event) => {{
+      const rect = img.getBoundingClientRect();
+      const pageWidth = Number(img.dataset.width);
+      const pageHeight = Number(img.dataset.height);
+      const x = (event.clientX - rect.left) / rect.width * pageWidth;
+      const y = (event.clientY - rect.top) / rect.height * pageHeight;
+      if (!confirm("Agregar la cota mas cercana al clic?")) {{
+        return;
+      }}
+      document.getElementById("mark-page").value = img.dataset.page;
+      document.getElementById("mark-x").value = x.toFixed(3);
+      document.getElementById("mark-y").value = y.toFixed(3);
+      document.getElementById("mark-form").submit();
+    }});
+  }});
+</script>
+"""
+        self.send_html("Agregar cotas faltantes", body)
+
+    def handle_mark(self, job_id: str) -> None:
+        job = self.find_job(job_id)
+        if not job:
+            self.send_html("No encontrado", "<section><h2>Trabajo no encontrado</h2></section>", 404)
+            return
+
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        raw = self.rfile.read(length).decode("utf-8", errors="replace")
+        form = parse_qs(raw)
+        try:
+            page = int(float(form.get("page", ["1"])[0]))
+            x = float(form.get("x", ["0"])[0])
+            y = float(form.get("y", ["0"])[0])
+        except ValueError:
+            self.show_mark(job_id, "No se pudo leer la posicion del clic.")
+            return
+
+        found = nearest_pdf_text(Path(job["original_pdf"]), page, x, y)
+        if not found:
+            self.show_mark(job_id, "No se encontro texto cerca del clic. Intente tocar directamente sobre la cota.")
+            return
+
+        text, box = found
+        candidates = self.load_job_candidates(job)
+        next_number = max([candidate.number for candidate in candidates], default=0) + 1
+        candidates.append(
+            DimensionCandidate(
+                number=next_number,
+                page=page,
+                text=text,
+                x=box["x"],
+                y=box["y"],
+                width=box["width"],
+                height=box["height"],
+                confidence=1.0,
+                reason="click add",
+            )
+        )
+        candidates.sort(key=lambda item: item.number)
+        self.save_job_candidates(job, candidates)
+        self.show_mark(job_id, f"Agregada cota #{next_number}: {text}")
+
     def handle_edit(self, job_id: str) -> None:
         import cgi
 
@@ -847,13 +1052,7 @@ class App(BaseHTTPRequestHandler):
                 )
             )
         candidates.sort(key=lambda item: (item.page, item.number))
-        candidates_json = Path(job["candidates_json"])
-        candidates_json.write_text(
-            json.dumps([candidate.__dict__ for candidate in candidates], indent=2),
-            encoding="utf-8",
-        )
-        draw_numbered_overlay(Path(job["original_pdf"]), candidates, Path(job["numbered_pdf"]))
-        generate_tolerance_workbook(candidates, Path(job["numbered_pdf"]).with_name("tolerancias.xlsx"), job)
+        self.save_job_candidates(job, candidates)
         self.redirect(f"/job/{quote(job_id)}")
 
     def find_job(self, job_id: str) -> dict | None:
@@ -885,6 +1084,32 @@ class App(BaseHTTPRequestHandler):
             return len(json.loads(path.read_text(encoding="utf-8")))
         except Exception:
             return 0
+
+    def load_job_candidates(self, job: dict) -> list[DimensionCandidate]:
+        payload = json.loads(Path(job["candidates_json"]).read_text(encoding="utf-8"))
+        return [
+            DimensionCandidate(
+                number=int(item["number"]),
+                page=int(item["page"]),
+                text=str(item.get("text", "")),
+                x=float(item["x"]),
+                y=float(item["y"]),
+                width=float(item.get("width", 0)),
+                height=float(item.get("height", 0)),
+                confidence=float(item.get("confidence", 0)),
+                reason=str(item.get("reason", "")),
+            )
+            for item in payload
+        ]
+
+    def save_job_candidates(self, job: dict, candidates: list[DimensionCandidate]) -> None:
+        candidates_json = Path(job["candidates_json"])
+        candidates_json.write_text(
+            json.dumps([candidate.__dict__ for candidate in candidates], indent=2),
+            encoding="utf-8",
+        )
+        draw_numbered_overlay(Path(job["original_pdf"]), candidates, Path(job["numbered_pdf"]))
+        generate_tolerance_workbook(candidates, Path(job["numbered_pdf"]).with_name("tolerancias.xlsx"), job)
 
     def delete_job_record(self, job_id: str) -> tuple[bool, str]:
         import sqlite3
