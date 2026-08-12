@@ -53,7 +53,7 @@ def writable_storage_path() -> Path:
 STORAGE = writable_storage_path()
 UPLOADS = STORAGE / "uploads"
 CLIENTS_FILE = ROOT / "data" / "clients.json"
-ENGINE_VERSION = "2026-08-12-click-add-edge-dimensions"
+ENGINE_VERSION = "2026-08-12-click-add-single-word-edge-dimensions"
 AUTH_USER = os.getenv("COTAS_ADMIN_USER", "admin")
 AUTH_PASSWORD = os.getenv("COTAS_ADMIN_PASSWORD", "")
 AUTH_SECRET = os.getenv("COTAS_SECRET_KEY", "")
@@ -257,6 +257,7 @@ def nearest_pdf_text(original_pdf: Path, page_number: int, x: float, y: float) -
         or y > page_height * 0.82
     )
     rotated_radius = 150 if near_edge else 95
+    word_radius = 95 if near_edge else 45
     phrase_radius = 170 if near_edge else 110
     fallback_radius = 130 if near_edge else 78
 
@@ -307,6 +308,23 @@ def nearest_pdf_text(original_pdf: Path, page_number: int, x: float, y: float) -
 
     lines: list[list[dict]] = []
     upright_words = [word for word in words if word.get("upright") is not False]
+    for index, word in enumerate(upright_words):
+        text = str(word.get("text", "")).strip()
+        if not text:
+            continue
+        ok, confidence, _ = looks_like_dimension(text, text, text)
+        if not ok:
+            continue
+        box = union_word_boxes([word])
+        distance = point_distance_to_box(x, y, box)
+        if distance > word_radius:
+            continue
+        key = (index, text, round(box["x"]), round(box["y"]))
+        if key in seen:
+            continue
+        seen.add(key)
+        scored.append((distance - 80 - (confidence * 20), confidence, text, box))
+
     for word in sorted(upright_words, key=lambda item: (float(item.get("top", 0)), float(item.get("x0", 0)))):
         if not lines or abs(float(lines[-1][0].get("top", 0)) - float(word.get("top", 0))) >= 6:
             lines.append([word])
