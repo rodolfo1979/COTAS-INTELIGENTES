@@ -53,7 +53,7 @@ def writable_storage_path() -> Path:
 STORAGE = writable_storage_path()
 UPLOADS = STORAGE / "uploads"
 CLIENTS_FILE = ROOT / "data" / "clients.json"
-ENGINE_VERSION = "2026-08-11-click-add-fixed-leader"
+ENGINE_VERSION = "2026-08-11-click-add-fast-edge-leader"
 AUTH_USER = os.getenv("COTAS_ADMIN_USER", "admin")
 AUTH_PASSWORD = os.getenv("COTAS_ADMIN_PASSWORD", "")
 AUTH_SECRET = os.getenv("COTAS_SECRET_KEY", "")
@@ -165,6 +165,28 @@ def point_distance_to_box(x: float, y: float, box: dict[str, float]) -> float:
     dx = max(left - x, 0.0, x - right)
     dy = max(top - y, 0.0, y - bottom)
     return (dx * dx + dy * dy) ** 0.5
+
+
+def line_anchor_on_box_edge(box: dict[str, float], label_x: float, label_y: float, padding: float = 3.0) -> tuple[float, float]:
+    left = float(box["x"])
+    top = float(box["y"])
+    right = left + float(box["width"])
+    bottom = top + float(box["height"])
+    center_x = (left + right) / 2
+    center_y = (top + bottom) / 2
+    dx = label_x - center_x
+    dy = label_y - center_y
+    if abs(dx) >= abs(dy):
+        anchor_x = right + padding if dx >= 0 else left - padding
+        scale = (anchor_x - center_x) / dx if dx else 0
+        anchor_y = center_y + dy * scale
+        anchor_y = max(top - padding, min(bottom + padding, anchor_y))
+    else:
+        anchor_y = bottom + padding if dy >= 0 else top - padding
+        scale = (anchor_y - center_y) / dy if dy else 0
+        anchor_x = center_x + dx * scale
+        anchor_x = max(left - padding, min(right + padding, anchor_x))
+    return anchor_x, anchor_y
 
 
 def nearest_pdf_text(original_pdf: Path, page_number: int, x: float, y: float) -> tuple[str, dict[str, float]] | None:
@@ -556,6 +578,8 @@ class App(BaseHTTPRequestHandler):
             self.handle_upload()
         elif parsed.path.startswith("/edit/"):
             self.handle_edit(unquote(parsed.path.removeprefix("/edit/")))
+        elif parsed.path.startswith("/mark/") and parsed.path.endswith("/finish"):
+            self.handle_mark_finish(unquote(parsed.path.removeprefix("/mark/").removesuffix("/finish")))
         elif parsed.path.startswith("/mark/") and parsed.path.endswith("/undo"):
             self.handle_mark_undo(unquote(parsed.path.removeprefix("/mark/").removesuffix("/undo")))
         elif parsed.path.startswith("/mark/"):
@@ -1034,10 +1058,10 @@ class App(BaseHTTPRequestHandler):
 <section>
   <h2>Agregar cotas faltantes con mouse</h2>
   {notice}
-  <p class="muted">Esta vista muestra el PDF ya numerado. Haga clic sobre el texto de la cota faltante; el sistema tomara el texto cercano del plano original, asignara el siguiente numero y regenerara el PDF y el Excel.</p>
+  <p class="muted">Esta vista muestra el PDF ya numerado. Haga clic donde quiere colocar el numero; el sistema tomara la cota cercana para el Excel. Al terminar, use Guardar PDF/Excel y volver.</p>
   <p class="muted mark-status" id="mark-status"></p>
   <div class="actions">
-    <a class="button secondary" href="/job/{quote(job_id)}">Volver al trabajo</a>
+    <button class="button" form="finish-mark-form" type="submit">Guardar PDF/Excel y volver</button>
     <button class="button danger" form="undo-mark-form" type="submit">Deshacer ultimo agregado</button>
   </div>
 </section>
@@ -1046,6 +1070,7 @@ class App(BaseHTTPRequestHandler):
   <input type="hidden" name="x" id="mark-x">
   <input type="hidden" name="y" id="mark-y">
 </form>
+<form id="finish-mark-form" method="post" action="/mark/{quote(job_id)}/finish"></form>
 <form id="undo-mark-form" method="post" action="/mark/{quote(job_id)}/undo"></form>
 {page_blocks}
 <script>
@@ -1172,6 +1197,7 @@ class App(BaseHTTPRequestHandler):
             return
 
         text, box = found
+        anchor_x, anchor_y = line_anchor_on_box_edge(box, x, y)
         candidates = self.load_job_candidates(job)
         next_number = max([candidate.number for candidate in candidates], default=0) + 1
         candidate = DimensionCandidate(
@@ -1186,12 +1212,12 @@ class App(BaseHTTPRequestHandler):
             reason="click add",
             click_x=x,
             click_y=y,
-            anchor_x=box["x"] + box["width"] / 2,
-            anchor_y=box["y"] + box["height"] / 2,
+            anchor_x=anchor_x,
+            anchor_y=anchor_y,
         )
         candidates.append(candidate)
         candidates.sort(key=lambda item: item.number)
-        self.save_job_candidates(job, candidates)
+        self.save_job_candidates(job, candidates, render_outputs=not wants_json)
         message = f"Agregada cota #{next_number}: {text}"
         if wants_json:
             self.send_json(
@@ -1222,6 +1248,16 @@ class App(BaseHTTPRequestHandler):
             candidate.number = number
         self.save_job_candidates(job, candidates)
         self.show_mark(job_id, f"Se deshizo la cota #{last_added.number}: {last_added.text}")
+
+    def handle_mark_finish(self, job_id: str) -> None:
+        job = self.find_job(job_id)
+        if not job:
+            self.send_html("No encontrado", "<section><h2>Trabajo no encontrado</h2></section>", 404)
+            return
+
+        candidates = self.load_job_candidates(job)
+        self.save_job_candidates(job, candidates, render_outputs=True)
+        self.redirect(f"/job/{quote(job_id)}")
 
     def handle_edit(self, job_id: str) -> None:
         import cgi
@@ -1304,12 +1340,14 @@ class App(BaseHTTPRequestHandler):
             for item in payload
         ]
 
-    def save_job_candidates(self, job: dict, candidates: list[DimensionCandidate]) -> None:
+    def save_job_candidates(self, job: dict, candidates: list[DimensionCandidate], render_outputs: bool = True) -> None:
         candidates_json = Path(job["candidates_json"])
         candidates_json.write_text(
             json.dumps([candidate.__dict__ for candidate in candidates], indent=2),
             encoding="utf-8",
         )
+        if not render_outputs:
+            return
         draw_numbered_overlay(Path(job["original_pdf"]), candidates, Path(job["numbered_pdf"]))
         generate_tolerance_workbook(candidates, Path(job["numbered_pdf"]).with_name("tolerancias.xlsx"), job)
 

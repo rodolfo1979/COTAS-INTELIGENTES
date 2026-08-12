@@ -2268,13 +2268,14 @@ def draw_numbered_overlay(
             c.drawString(pdf_x - text_width / 2, pdf_y - 2.2, label)
 
             c.setStrokeColor(HexColor("#dc2626"))
-            if (
-                "click add" in candidate.reason
-                and candidate.anchor_x is not None
-                and candidate.anchor_y is not None
-            ):
-                line_start_x = float(candidate.anchor_x)
-                line_start_y = height - float(candidate.anchor_y)
+            if "click add" in candidate.reason and candidate.click_x is not None and candidate.click_y is not None:
+                source_box = (
+                    candidate.x,
+                    candidate.y,
+                    candidate.x + candidate.width,
+                    candidate.y + candidate.height,
+                )
+                line_start_x, line_start_y = line_start_outside_source_box(source_box, (pdf_x, pdf_y), height)
             else:
                 source_box = expanded_horizontal_source_box(candidate, occupied_by_page.get(page_index, []))
                 line_start_x, line_start_y = line_start_outside_source_box(source_box, (pdf_x, pdf_y), height)
