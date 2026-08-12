@@ -53,7 +53,7 @@ def writable_storage_path() -> Path:
 STORAGE = writable_storage_path()
 UPLOADS = STORAGE / "uploads"
 CLIENTS_FILE = ROOT / "data" / "clients.json"
-ENGINE_VERSION = "2026-08-11-click-add-block-duplicates"
+ENGINE_VERSION = "2026-08-12-click-add-edge-dimensions"
 AUTH_USER = os.getenv("COTAS_ADMIN_USER", "admin")
 AUTH_PASSWORD = os.getenv("COTAS_ADMIN_PASSWORD", "")
 AUTH_SECRET = os.getenv("COTAS_SECRET_KEY", "")
@@ -238,7 +238,10 @@ def nearest_pdf_text(original_pdf: Path, page_number: int, x: float, y: float) -
     with pdfplumber.open(str(original_pdf)) as pdf:
         if page_number < 1 or page_number > len(pdf.pages):
             return None
-        words = pdf.pages[page_number - 1].extract_words(
+        page = pdf.pages[page_number - 1]
+        page_width = float(page.width)
+        page_height = float(page.height)
+        words = page.extract_words(
             keep_blank_chars=False,
             use_text_flow=False,
             extra_attrs=[],
@@ -246,6 +249,16 @@ def nearest_pdf_text(original_pdf: Path, page_number: int, x: float, y: float) -
 
     if not words:
         return None
+
+    near_edge = (
+        x < page_width * 0.12
+        or x > page_width * 0.88
+        or y < page_height * 0.12
+        or y > page_height * 0.82
+    )
+    rotated_radius = 150 if near_edge else 95
+    phrase_radius = 170 if near_edge else 110
+    fallback_radius = 130 if near_edge else 78
 
     scored: list[tuple[float, float, str, dict[str, float]]] = []
     seen: set[tuple[int, str, int, int]] = set()
@@ -286,7 +299,7 @@ def nearest_pdf_text(original_pdf: Path, page_number: int, x: float, y: float) -
         box = union_word_boxes(selected)
         ok, confidence, _ = looks_like_dimension(text, text, text)
         distance = point_distance_to_box(x, y, box)
-        if ok and distance <= 95:
+        if ok and distance <= rotated_radius:
             key = (index, text, round(box["x"]), round(box["y"]))
             if key not in seen:
                 seen.add(key)
@@ -316,7 +329,7 @@ def nearest_pdf_text(original_pdf: Path, page_number: int, x: float, y: float) -
 
             ok, confidence, _ = looks_like_dimension(phrase, line_text, line_text)
             distance = point_distance_to_box(x, y, box)
-            if not ok or distance > 110:
+            if not ok or distance > phrase_radius:
                 continue
             scored.append((distance - (confidence * 18), confidence, phrase, box))
 
@@ -329,7 +342,7 @@ def nearest_pdf_text(original_pdf: Path, page_number: int, x: float, y: float) -
 
     nearest = min(words, key=lambda word: (center(word)[0] - x) ** 2 + (center(word)[1] - y) ** 2)
     nearest_x, nearest_y = center(nearest)
-    if ((nearest_x - x) ** 2 + (nearest_y - y) ** 2) ** 0.5 > 78:
+    if ((nearest_x - x) ** 2 + (nearest_y - y) ** 2) ** 0.5 > fallback_radius:
         return None
 
     return str(nearest.get("text", "")).strip(), union_word_boxes([nearest])
