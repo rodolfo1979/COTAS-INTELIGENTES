@@ -87,6 +87,8 @@ class DimensionCandidate:
     reason: str
     click_x: float | None = None
     click_y: float | None = None
+    anchor_x: float | None = None
+    anchor_y: float | None = None
 
 
 @dataclass(frozen=True)
@@ -2266,8 +2268,16 @@ def draw_numbered_overlay(
             c.drawString(pdf_x - text_width / 2, pdf_y - 2.2, label)
 
             c.setStrokeColor(HexColor("#dc2626"))
-            source_box = expanded_horizontal_source_box(candidate, occupied_by_page.get(page_index, []))
-            line_start_x, line_start_y = line_start_outside_source_box(source_box, (pdf_x, pdf_y), height)
+            if (
+                "click add" in candidate.reason
+                and candidate.anchor_x is not None
+                and candidate.anchor_y is not None
+            ):
+                line_start_x = float(candidate.anchor_x)
+                line_start_y = height - float(candidate.anchor_y)
+            else:
+                source_box = expanded_horizontal_source_box(candidate, occupied_by_page.get(page_index, []))
+                line_start_x, line_start_y = line_start_outside_source_box(source_box, (pdf_x, pdf_y), height)
             vec_x = line_start_x - pdf_x
             vec_y = line_start_y - pdf_y
             vec_len = (vec_x * vec_x + vec_y * vec_y) ** 0.5 or 1.0
@@ -2305,6 +2315,8 @@ def load_candidates(path: Path) -> list[DimensionCandidate]:
                 reason=str(item.get("reason", "manual")),
                 click_x=float(item["click_x"]) if item.get("click_x") is not None else None,
                 click_y=float(item["click_y"]) if item.get("click_y") is not None else None,
+                anchor_x=float(item["anchor_x"]) if item.get("anchor_x") is not None else None,
+                anchor_y=float(item["anchor_y"]) if item.get("anchor_y") is not None else None,
             )
         )
     candidates.sort(key=lambda item: (item.page, item.number))

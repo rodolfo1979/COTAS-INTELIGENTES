@@ -53,7 +53,7 @@ def writable_storage_path() -> Path:
 STORAGE = writable_storage_path()
 UPLOADS = STORAGE / "uploads"
 CLIENTS_FILE = ROOT / "data" / "clients.json"
-ENGINE_VERSION = "2026-08-11-click-add-faster-tolerant"
+ENGINE_VERSION = "2026-08-11-click-add-fixed-leader"
 AUTH_USER = os.getenv("COTAS_ADMIN_USER", "admin")
 AUTH_PASSWORD = os.getenv("COTAS_ADMIN_PASSWORD", "")
 AUTH_SECRET = os.getenv("COTAS_SECRET_KEY", "")
@@ -357,6 +357,7 @@ def layout(title: str, body: str, authenticated: bool = True) -> bytes:
     .mark-stage {{ position: relative; width: 100%; }}
     .mark-page {{ display: block; width: 100%; height: auto; cursor: crosshair; }}
     .mark-pin {{ position: absolute; color: var(--accent); font-size: 11px; font-weight: 700; line-height: 1; transform: translate(-50%, -50%); pointer-events: none; }}
+    .mark-leader {{ position: absolute; height: 1px; background: var(--accent); transform-origin: 0 50%; pointer-events: none; }}
     .mark-status {{ min-height: 18px; margin-top: 8px; }}
     @media (max-width: 820px) {{
       .grid {{ grid-template-columns: 1fr; }}
@@ -1072,6 +1073,25 @@ class App(BaseHTTPRequestHandler):
     pin.style.left = `${{(labelX / pageWidth) * 100}}%`;
     pin.style.top = `${{(labelY / pageHeight) * 100}}%`;
     stage.appendChild(pin);
+
+    if (candidate.anchor_x != null && candidate.anchor_y != null) {{
+      const startX = (candidate.anchor_x / pageWidth) * stage.clientWidth;
+      const startY = (candidate.anchor_y / pageHeight) * img.clientHeight;
+      const endX = (labelX / pageWidth) * stage.clientWidth;
+      const endY = (labelY / pageHeight) * img.clientHeight;
+      const dx = endX - startX;
+      const dy = endY - startY;
+      const length = Math.sqrt(dx * dx + dy * dy);
+      if (length > 3) {{
+        const leader = document.createElement("span");
+        leader.className = "mark-leader";
+        leader.style.left = `${{startX}}px`;
+        leader.style.top = `${{startY}}px`;
+        leader.style.width = `${{length}}px`;
+        leader.style.transform = `rotate(${{Math.atan2(dy, dx)}}rad)`;
+        stage.appendChild(leader);
+      }}
+    }}
   }}
 
   document.querySelectorAll(".mark-page").forEach((img) => {{
@@ -1166,6 +1186,8 @@ class App(BaseHTTPRequestHandler):
             reason="click add",
             click_x=x,
             click_y=y,
+            anchor_x=box["x"] + box["width"] / 2,
+            anchor_y=box["y"] + box["height"] / 2,
         )
         candidates.append(candidate)
         candidates.sort(key=lambda item: item.number)
@@ -1276,6 +1298,8 @@ class App(BaseHTTPRequestHandler):
                 reason=str(item.get("reason", "")),
                 click_x=float(item["click_x"]) if item.get("click_x") is not None else None,
                 click_y=float(item["click_y"]) if item.get("click_y") is not None else None,
+                anchor_x=float(item["anchor_x"]) if item.get("anchor_x") is not None else None,
+                anchor_y=float(item["anchor_y"]) if item.get("anchor_y") is not None else None,
             )
             for item in payload
         ]
