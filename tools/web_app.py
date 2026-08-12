@@ -53,7 +53,7 @@ def writable_storage_path() -> Path:
 STORAGE = writable_storage_path()
 UPLOADS = STORAGE / "uploads"
 CLIENTS_FILE = ROOT / "data" / "clients.json"
-ENGINE_VERSION = "2026-08-11-click-add-fast-edge-leader"
+ENGINE_VERSION = "2026-08-11-click-add-block-duplicates"
 AUTH_USER = os.getenv("COTAS_ADMIN_USER", "admin")
 AUTH_PASSWORD = os.getenv("COTAS_ADMIN_PASSWORD", "")
 AUTH_SECRET = os.getenv("COTAS_SECRET_KEY", "")
@@ -187,6 +187,51 @@ def line_anchor_on_box_edge(box: dict[str, float], label_x: float, label_y: floa
         anchor_x = center_x + dx * scale
         anchor_x = max(left - padding, min(right + padding, anchor_x))
     return anchor_x, anchor_y
+
+
+def normalized_dimension_key(text: str) -> str:
+    return "".join(ch for ch in text.upper().replace(",", ".") if not ch.isspace())
+
+
+def candidate_box(candidate: DimensionCandidate) -> dict[str, float]:
+    return {
+        "x": candidate.x,
+        "y": candidate.y,
+        "width": candidate.width,
+        "height": candidate.height,
+    }
+
+
+def box_intersection_ratio(first: dict[str, float], second: dict[str, float]) -> float:
+    first_right = first["x"] + first["width"]
+    first_bottom = first["y"] + first["height"]
+    second_right = second["x"] + second["width"]
+    second_bottom = second["y"] + second["height"]
+    left = max(first["x"], second["x"])
+    top = max(first["y"], second["y"])
+    right = min(first_right, second_right)
+    bottom = min(first_bottom, second_bottom)
+    overlap = max(0.0, right - left) * max(0.0, bottom - top)
+    smaller = max(1.0, min(first["width"] * first["height"], second["width"] * second["height"]))
+    return overlap / smaller
+
+
+def existing_number_for_box(candidates: list[DimensionCandidate], page: int, text: str, box: dict[str, float]) -> int | None:
+    text_key = normalized_dimension_key(text)
+    center_x = box["x"] + box["width"] / 2
+    center_y = box["y"] + box["height"] / 2
+    for candidate in candidates:
+        if candidate.page != page:
+            continue
+        current_box = candidate_box(candidate)
+        current_center_x = current_box["x"] + current_box["width"] / 2
+        current_center_y = current_box["y"] + current_box["height"] / 2
+        same_text = normalized_dimension_key(candidate.text) == text_key
+        overlaps = box_intersection_ratio(current_box, box) >= 0.45
+        nearby = ((current_center_x - center_x) ** 2 + (current_center_y - center_y) ** 2) ** 0.5 <= 8
+        if same_text and (overlaps or nearby):
+            return candidate.number
+    return None
 
 
 def nearest_pdf_text(original_pdf: Path, page_number: int, x: float, y: float) -> tuple[str, dict[str, float]] | None:
@@ -1199,6 +1244,15 @@ class App(BaseHTTPRequestHandler):
         text, box = found
         anchor_x, anchor_y = line_anchor_on_box_edge(box, x, y)
         candidates = self.load_job_candidates(job)
+        existing_number = existing_number_for_box(candidates, page, text, box)
+        if existing_number is not None:
+            message = f"Esa cota ya esta numerada como #{existing_number}. No se agrego duplicado."
+            if wants_json:
+                self.send_json({"ok": False, "message": message, "duplicate": True}, 409)
+            else:
+                self.show_mark(job_id, message)
+            return
+
         next_number = max([candidate.number for candidate in candidates], default=0) + 1
         candidate = DimensionCandidate(
             number=next_number,
