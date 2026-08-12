@@ -53,7 +53,7 @@ def writable_storage_path() -> Path:
 STORAGE = writable_storage_path()
 UPLOADS = STORAGE / "uploads"
 CLIENTS_FILE = ROOT / "data" / "clients.json"
-ENGINE_VERSION = "2026-08-12-click-add-single-word-edge-dimensions"
+ENGINE_VERSION = "2026-08-12-mark-add-delete"
 AUTH_USER = os.getenv("COTAS_ADMIN_USER", "admin")
 AUTH_PASSWORD = os.getenv("COTAS_ADMIN_PASSWORD", "")
 AUTH_SECRET = os.getenv("COTAS_SECRET_KEY", "")
@@ -454,7 +454,10 @@ def layout(title: str, body: str, authenticated: bool = True) -> bytes:
     .mark-wrap {{ overflow: auto; border: 1px solid var(--line); background: #fff; max-height: 820px; }}
     .mark-stage {{ position: relative; width: 100%; }}
     .mark-page {{ display: block; width: 100%; height: auto; cursor: crosshair; }}
-    .mark-pin {{ position: absolute; color: var(--accent); font-size: 11px; font-weight: 700; line-height: 1; transform: translate(-50%, -50%); pointer-events: none; }}
+    .mark-pin {{ position: absolute; color: var(--accent); background: rgba(255, 255, 255, 0.72); border: 1px solid transparent; border-radius: 999px; min-width: 18px; height: 18px; padding: 0 4px; font-size: 11px; font-weight: 700; line-height: 16px; transform: translate(-50%, -50%); cursor: pointer; }}
+    .mark-pin:hover, .mark-pin:focus {{ border-color: var(--accent); outline: none; }}
+    .mark-delete-mode .mark-page {{ cursor: default; }}
+    .mark-delete-mode .mark-pin {{ color: #b42318; border-color: #b42318; background: rgba(255, 255, 255, 0.92); }}
     .mark-leader {{ position: absolute; height: 1px; background: var(--accent); transform-origin: 0 50%; pointer-events: none; }}
     .mark-status {{ min-height: 18px; margin-top: 8px; }}
     @media (max-width: 820px) {{
@@ -658,6 +661,8 @@ class App(BaseHTTPRequestHandler):
             self.handle_mark_finish(unquote(parsed.path.removeprefix("/mark/").removesuffix("/finish")))
         elif parsed.path.startswith("/mark/") and parsed.path.endswith("/undo"):
             self.handle_mark_undo(unquote(parsed.path.removeprefix("/mark/").removesuffix("/undo")))
+        elif parsed.path.startswith("/mark/") and parsed.path.endswith("/delete"):
+            self.handle_mark_delete(unquote(parsed.path.removeprefix("/mark/").removesuffix("/delete")))
         elif parsed.path.startswith("/mark/"):
             self.handle_mark(unquote(parsed.path.removeprefix("/mark/")))
         elif parsed.path == "/delete-selected":
@@ -1116,6 +1121,8 @@ class App(BaseHTTPRequestHandler):
             self.send_html("Error", f"<section><h2>No se pudo preparar el plano</h2><p>{esc(exc)}</p></section>", 500)
             return
 
+        candidates = self.load_job_candidates(job)
+        candidates_json = json.dumps([candidate.__dict__ for candidate in candidates]).replace("</", "<\\/")
         notice = f'<p class="ok">{esc(message)}</p>' if message else ""
         page_blocks = "".join(
             f"""
@@ -1138,6 +1145,7 @@ class App(BaseHTTPRequestHandler):
   <p class="muted mark-status" id="mark-status"></p>
   <div class="actions">
     <button class="button" form="finish-mark-form" type="submit">Guardar PDF/Excel y volver</button>
+    <button class="button secondary" id="delete-mode-button" type="button">Modo eliminar</button>
     <button class="button danger" form="undo-mark-form" type="submit">Deshacer ultimo agregado</button>
   </div>
 </section>
@@ -1151,12 +1159,21 @@ class App(BaseHTTPRequestHandler):
 {page_blocks}
 <script>
   let markBusy = false;
+  let deleteMode = false;
+  const initialCandidates = {candidates_json};
   const statusNode = document.getElementById("mark-status");
   const form = document.getElementById("mark-form");
+  const deleteButton = document.getElementById("delete-mode-button");
 
   function setStatus(message, isError = false) {{
     statusNode.textContent = message;
     statusNode.style.color = isError ? "#b42318" : "#157347";
+  }}
+
+  function updateDeleteMode() {{
+    document.body.classList.toggle("mark-delete-mode", deleteMode);
+    deleteButton.textContent = deleteMode ? "Modo agregar" : "Modo eliminar";
+    setStatus(deleteMode ? "Modo eliminar activo: haga clic en el numero que quiere quitar." : "Modo agregar activo: haga clic en la cota faltante.");
   }}
 
   function drawMarker(img, candidate) {{
@@ -1168,11 +1185,50 @@ class App(BaseHTTPRequestHandler):
     const rawY = candidate.click_y ?? (candidate.y + candidate.height / 2);
     const labelX = Math.min(Math.max(rawX, 8), pageWidth - 8);
     const labelY = Math.min(Math.max(rawY, 8), pageHeight - 8);
-    const pin = document.createElement("span");
+    const pin = document.createElement("button");
+    pin.type = "button";
     pin.className = "mark-pin";
     pin.textContent = candidate.number;
+    pin.dataset.number = candidate.number;
+    pin.title = `Eliminar cota #${{candidate.number}}`;
     pin.style.left = `${{(labelX / pageWidth) * 100}}%`;
     pin.style.top = `${{(labelY / pageHeight) * 100}}%`;
+    pin.addEventListener("click", async (event) => {{
+      event.preventDefault();
+      event.stopPropagation();
+      if (!deleteMode) {{
+        setStatus("Active el Modo eliminar para quitar esta numeracion.");
+        return;
+      }}
+      if (markBusy) {{
+        setStatus("Espere un momento, guardando el cambio anterior...");
+        return;
+      }}
+      if (!confirm(`Eliminar la cota #${{candidate.number}}?`)) return;
+      markBusy = true;
+      setStatus(`Eliminando cota #${{candidate.number}}...`);
+      try {{
+        const response = await fetch(`/mark/{quote(job_id)}/delete`, {{
+          method: "POST",
+          headers: {{
+            "Content-Type": "application/x-www-form-urlencoded",
+            "X-Requested-With": "fetch",
+          }},
+          body: new URLSearchParams({{ number: String(candidate.number) }}),
+        }});
+        const result = await response.json();
+        if (!response.ok || !result.ok) {{
+          setStatus(result.message || "No se pudo eliminar la cota.", true);
+          return;
+        }}
+        setStatus(result.message);
+        window.location.reload();
+      }} catch (error) {{
+        setStatus("No se pudo eliminar por conexion. Intente de nuevo.", true);
+      }} finally {{
+        markBusy = false;
+      }}
+    }});
     stage.appendChild(pin);
 
     if (candidate.anchor_x != null && candidate.anchor_y != null) {{
@@ -1195,8 +1251,21 @@ class App(BaseHTTPRequestHandler):
     }}
   }}
 
+  deleteButton.addEventListener("click", () => {{
+    deleteMode = !deleteMode;
+    updateDeleteMode();
+  }});
+
   document.querySelectorAll(".mark-page").forEach((img) => {{
+    initialCandidates
+      .filter((candidate) => Number(candidate.page) === Number(img.dataset.page))
+      .forEach((candidate) => drawMarker(img, candidate));
+
     img.addEventListener("click", async (event) => {{
+      if (deleteMode) {{
+        setStatus("Modo eliminar activo: haga clic en el numero que quiere quitar.");
+        return;
+      }}
       if (markBusy) {{
         setStatus("Espere un momento, guardando la cota anterior...");
         return;
@@ -1333,6 +1402,50 @@ class App(BaseHTTPRequestHandler):
             candidate.number = number
         self.save_job_candidates(job, candidates)
         self.show_mark(job_id, f"Se deshizo la cota #{last_added.number}: {last_added.text}")
+
+    def handle_mark_delete(self, job_id: str) -> None:
+        job = self.find_job(job_id)
+        wants_json = self.headers.get("X-Requested-With") == "fetch"
+        if not job:
+            message = "Trabajo no encontrado."
+            if wants_json:
+                self.send_json({"ok": False, "message": message}, 404)
+            else:
+                self.send_html("No encontrado", f"<section><h2>{esc(message)}</h2></section>", 404)
+            return
+
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        raw = self.rfile.read(length).decode("utf-8", errors="replace")
+        form = parse_qs(raw)
+        try:
+            number = int(float(form.get("number", ["0"])[0]))
+        except ValueError:
+            message = "No se pudo leer el numero de cota a eliminar."
+            if wants_json:
+                self.send_json({"ok": False, "message": message}, 422)
+            else:
+                self.show_mark(job_id, message)
+            return
+
+        candidates = self.load_job_candidates(job)
+        removed = next((candidate for candidate in candidates if candidate.number == number), None)
+        if not removed:
+            message = f"No se encontro la cota #{number}."
+            if wants_json:
+                self.send_json({"ok": False, "message": message}, 404)
+            else:
+                self.show_mark(job_id, message)
+            return
+
+        candidates = [candidate for candidate in candidates if candidate.number != number]
+        for new_number, candidate in enumerate(sorted(candidates, key=lambda item: item.number), start=1):
+            candidate.number = new_number
+        self.save_job_candidates(job, candidates)
+        message = f"Se elimino la cota #{number}: {removed.text}"
+        if wants_json:
+            self.send_json({"ok": True, "message": message})
+        else:
+            self.show_mark(job_id, message)
 
     def handle_mark_finish(self, job_id: str) -> None:
         job = self.find_job(job_id)
