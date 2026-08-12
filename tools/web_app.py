@@ -53,7 +53,7 @@ def writable_storage_path() -> Path:
 STORAGE = writable_storage_path()
 UPLOADS = STORAGE / "uploads"
 CLIENTS_FILE = ROOT / "data" / "clients.json"
-ENGINE_VERSION = "2026-08-12-remember-mark-mode"
+ENGINE_VERSION = "2026-08-12-reuse-deleted-mark-numbers"
 AUTH_USER = os.getenv("COTAS_ADMIN_USER", "admin")
 AUTH_PASSWORD = os.getenv("COTAS_ADMIN_PASSWORD", "")
 AUTH_SECRET = os.getenv("COTAS_SECRET_KEY", "")
@@ -232,6 +232,14 @@ def existing_number_for_box(candidates: list[DimensionCandidate], page: int, tex
         if same_text and (overlaps or nearby):
             return candidate.number
     return None
+
+
+def next_available_candidate_number(candidates: list[DimensionCandidate]) -> int:
+    used_numbers = {candidate.number for candidate in candidates if candidate.number > 0}
+    number = 1
+    while number in used_numbers:
+        number += 1
+    return number
 
 
 def nearest_pdf_text(original_pdf: Path, page_number: int, x: float, y: float) -> tuple[str, dict[str, float]] | None:
@@ -1356,7 +1364,7 @@ class App(BaseHTTPRequestHandler):
                 self.show_mark(job_id, message)
             return
 
-        next_number = max([candidate.number for candidate in candidates], default=0) + 1
+        next_number = next_available_candidate_number(candidates)
         candidate = DimensionCandidate(
             number=next_number,
             page=page,
@@ -1401,8 +1409,6 @@ class App(BaseHTTPRequestHandler):
 
         last_added = max(click_candidates, key=lambda candidate: candidate.number)
         candidates = [candidate for candidate in candidates if candidate is not last_added]
-        for number, candidate in enumerate(sorted(candidates, key=lambda item: item.number), start=1):
-            candidate.number = number
         self.save_job_candidates(job, candidates)
         self.show_mark(job_id, f"Se deshizo la cota #{last_added.number}: {last_added.text}")
 
@@ -1441,8 +1447,6 @@ class App(BaseHTTPRequestHandler):
             return
 
         candidates = [candidate for candidate in candidates if candidate.number != number]
-        for new_number, candidate in enumerate(sorted(candidates, key=lambda item: item.number), start=1):
-            candidate.number = new_number
         self.save_job_candidates(job, candidates)
         message = f"Se elimino la cota #{number}: {removed.text}"
         if wants_json:
