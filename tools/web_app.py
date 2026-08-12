@@ -53,7 +53,7 @@ def writable_storage_path() -> Path:
 STORAGE = writable_storage_path()
 UPLOADS = STORAGE / "uploads"
 CLIENTS_FILE = ROOT / "data" / "clients.json"
-ENGINE_VERSION = "2026-08-12-mark-add-delete"
+ENGINE_VERSION = "2026-08-12-remember-mark-mode"
 AUTH_USER = os.getenv("COTAS_ADMIN_USER", "admin")
 AUTH_PASSWORD = os.getenv("COTAS_ADMIN_PASSWORD", "")
 AUTH_SECRET = os.getenv("COTAS_SECRET_KEY", "")
@@ -1159,7 +1159,8 @@ class App(BaseHTTPRequestHandler):
 {page_blocks}
 <script>
   let markBusy = false;
-  let deleteMode = false;
+  const markModeKey = "cotas-mark-mode-{quote(job_id)}";
+  let deleteMode = localStorage.getItem(markModeKey) === "delete";
   const initialCandidates = {candidates_json};
   const statusNode = document.getElementById("mark-status");
   const form = document.getElementById("mark-form");
@@ -1172,6 +1173,7 @@ class App(BaseHTTPRequestHandler):
 
   function updateDeleteMode() {{
     document.body.classList.toggle("mark-delete-mode", deleteMode);
+    localStorage.setItem(markModeKey, deleteMode ? "delete" : "add");
     deleteButton.textContent = deleteMode ? "Modo agregar" : "Modo eliminar";
     setStatus(deleteMode ? "Modo eliminar activo: haga clic en el numero que quiere quitar." : "Modo agregar activo: haga clic en la cota faltante.");
   }}
@@ -1255,6 +1257,7 @@ class App(BaseHTTPRequestHandler):
     deleteMode = !deleteMode;
     updateDeleteMode();
   }});
+  updateDeleteMode();
 
   document.querySelectorAll(".mark-page").forEach((img) => {{
     initialCandidates
