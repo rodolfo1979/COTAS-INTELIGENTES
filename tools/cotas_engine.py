@@ -2237,8 +2237,9 @@ def draw_numbered_overlay(
             label = str(candidate.number)
             c.setFont("Helvetica-Bold", font_size)
             text_width = c.stringWidth(label, "Helvetica-Bold", font_size)
-            label_half_width = text_width / 2 + 1.5
-            label_half_height = font_size / 2 + 1.5
+            label_radius = max(text_width / 2 + 3.0, font_size / 2 + 2.5)
+            label_half_width = label_radius
+            label_half_height = label_radius
             text_x = candidate.x + candidate.width / 2
             text_y = height - candidate.y - (candidate.height / 2)
             pdf_x, pdf_y = choose_label_position(
@@ -2263,6 +2264,8 @@ def draw_numbered_overlay(
             )
 
             c.setStrokeColor(HexColor("#dc2626"))
+            c.setFillColor(HexColor("#ffffff"))
+            c.circle(pdf_x, pdf_y, label_radius, stroke=1, fill=1)
             c.setFillColor(HexColor("#dc2626"))
             c.setFont("Helvetica-Bold", font_size)
             c.drawString(pdf_x - text_width / 2, pdf_y - 2.2, label)
@@ -2283,8 +2286,8 @@ def draw_numbered_overlay(
             vec_y = line_start_y - pdf_y
             vec_len = (vec_x * vec_x + vec_y * vec_y) ** 0.5 or 1.0
             if vec_len > 1.5:
-                label_edge_x = pdf_x + (vec_x / vec_len) * label_half_width
-                label_edge_y = pdf_y + (vec_y / vec_len) * label_half_height
+                label_edge_x = pdf_x + (vec_x / vec_len) * label_radius
+                label_edge_y = pdf_y + (vec_y / vec_len) * label_radius
                 c.line(line_start_x, line_start_y, label_edge_x, label_edge_y)
 
         c.save()

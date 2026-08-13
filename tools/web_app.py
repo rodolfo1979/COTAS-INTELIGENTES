@@ -53,7 +53,7 @@ def writable_storage_path() -> Path:
 STORAGE = writable_storage_path()
 UPLOADS = STORAGE / "uploads"
 CLIENTS_FILE = ROOT / "data" / "clients.json"
-ENGINE_VERSION = "2026-08-12-reuse-deleted-mark-numbers"
+ENGINE_VERSION = "2026-08-12-final-renumber-circled-labels"
 AUTH_USER = os.getenv("COTAS_ADMIN_USER", "admin")
 AUTH_PASSWORD = os.getenv("COTAS_ADMIN_PASSWORD", "")
 AUTH_SECRET = os.getenv("COTAS_SECRET_KEY", "")
@@ -240,6 +240,13 @@ def next_available_candidate_number(candidates: list[DimensionCandidate]) -> int
     while number in used_numbers:
         number += 1
     return number
+
+
+def renumber_candidates_consecutively(candidates: list[DimensionCandidate]) -> list[DimensionCandidate]:
+    for number, candidate in enumerate(sorted(candidates, key=lambda item: item.number), start=1):
+        candidate.number = number
+    candidates.sort(key=lambda item: item.number)
+    return candidates
 
 
 def nearest_pdf_text(original_pdf: Path, page_number: int, x: float, y: float) -> tuple[str, dict[str, float]] | None:
@@ -1461,6 +1468,7 @@ class App(BaseHTTPRequestHandler):
             return
 
         candidates = self.load_job_candidates(job)
+        candidates = renumber_candidates_consecutively(candidates)
         self.save_job_candidates(job, candidates, render_outputs=True)
         self.redirect(f"/job/{quote(job_id)}")
 
