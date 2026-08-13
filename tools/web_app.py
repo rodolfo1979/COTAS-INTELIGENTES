@@ -53,7 +53,7 @@ def writable_storage_path() -> Path:
 STORAGE = writable_storage_path()
 UPLOADS = STORAGE / "uploads"
 CLIENTS_FILE = ROOT / "data" / "clients.json"
-ENGINE_VERSION = "2026-08-12-final-renumber-circled-labels"
+ENGINE_VERSION = "2026-08-12-green-manual-markers"
 AUTH_USER = os.getenv("COTAS_ADMIN_USER", "admin")
 AUTH_PASSWORD = os.getenv("COTAS_ADMIN_PASSWORD", "")
 AUTH_SECRET = os.getenv("COTAS_SECRET_KEY", "")
@@ -471,6 +471,7 @@ def layout(title: str, body: str, authenticated: bool = True) -> bytes:
     .mark-page {{ display: block; width: 100%; height: auto; cursor: crosshair; }}
     .mark-pin {{ position: absolute; color: var(--accent); background: rgba(255, 255, 255, 0.72); border: 1px solid transparent; border-radius: 999px; min-width: 18px; height: 18px; padding: 0 4px; font-size: 11px; font-weight: 700; line-height: 16px; transform: translate(-50%, -50%); cursor: pointer; }}
     .mark-pin:hover, .mark-pin:focus {{ border-color: var(--accent); outline: none; }}
+    .mark-pin.manual {{ color: #157347; border-color: #157347; background: rgba(255, 255, 255, 0.92); }}
     .mark-delete-mode .mark-page {{ cursor: default; }}
     .mark-delete-mode .mark-pin {{ color: #b42318; border-color: #b42318; background: rgba(255, 255, 255, 0.92); }}
     .mark-leader {{ position: absolute; height: 1px; background: var(--accent); transform-origin: 0 50%; pointer-events: none; }}
@@ -1205,6 +1206,7 @@ class App(BaseHTTPRequestHandler):
     const pin = document.createElement("button");
     pin.type = "button";
     pin.className = "mark-pin";
+    if (candidate.reason === "click add") pin.classList.add("manual");
     pin.textContent = candidate.number;
     pin.dataset.number = candidate.number;
     pin.title = `Eliminar cota #${{candidate.number}}`;
