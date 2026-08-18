@@ -1,0 +1,16 @@
+[Unit]
+Description=COTAS INTELIGENTES super admin panel
+After=network.target
+
+[Service]
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/cotas-inteligentes
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/etc/cotas-super-admin.env
+ExecStart=/var/www/cotas-inteligentes/.venv/bin/python tools/super_admin.py 8099
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

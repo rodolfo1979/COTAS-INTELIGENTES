@@ -1,0 +1,16 @@
+[Unit]
+Description=COTAS INTELIGENTES tenant %i
+After=network.target
+
+[Service]
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/cotas-inteligentes
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/cotas-tenants/%i.env
+ExecStart=/var/www/cotas-inteligentes/.venv/bin/python tools/web_app.py ${COTAS_PORT}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
