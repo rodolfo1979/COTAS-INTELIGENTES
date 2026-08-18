@@ -192,6 +192,11 @@ def write_tenant_files(tenant: dict) -> None:
     (GENERATED_DIR / f"{tenant['slug']}-commands.txt").write_text(command_text(tenant), encoding="utf-8")
 
 
+def delete_generated_tenant_files(slug: str) -> None:
+    for filename in [f"{slug}.env", f"nginx-{slug}.conf", f"{slug}-commands.txt"]:
+        (GENERATED_DIR / filename).unlink(missing_ok=True)
+
+
 def layout(title: str, body: str, authenticated: bool = True) -> bytes:
     nav = ""
     if authenticated:
@@ -316,6 +321,10 @@ class SuperAdminApp(BaseHTTPRequestHandler):
         if path.startswith("/tenant/") and path.endswith("/update"):
             slug = unquote(path.removeprefix("/tenant/").removesuffix("/update")).strip("/")
             self.handle_update_tenant(slug)
+            return
+        if path.startswith("/tenant/") and path.endswith("/delete"):
+            slug = unquote(path.removeprefix("/tenant/").removesuffix("/delete")).strip("/")
+            self.handle_delete_tenant(slug)
             return
         self.send_html("No encontrado", "<section><h2>No encontrado</h2></section>", 404)
 
@@ -518,6 +527,14 @@ class SuperAdminApp(BaseHTTPRequestHandler):
   <h3>Comandos VPS</h3>
   <pre>{esc(command_text(tenant))}</pre>
 </section>
+<form method="post" action="/tenant/{quote(tenant['slug'])}/delete" onsubmit="return confirm('Eliminar este tenant del panel? Los archivos del cliente no se borran automaticamente.');">
+  <h2>Eliminar tenant</h2>
+  <p class="muted">Esto elimina el tenant del panel y borra sus archivos generados. No borra PDFs, historial ni apaga el servicio en el VPS.</p>
+  <p class="muted">Antes de eliminar un tenant ya activado, puede suspenderlo en el VPS con <code>sudo systemctl disable --now cotas-tenant@{esc(tenant['slug'])}</code>.</p>
+  <label>Escriba el slug para confirmar: <code>{esc(tenant['slug'])}</code></label>
+  <input name="confirm_slug" autocomplete="off">
+  <div class="actions"><button type="submit">Eliminar tenant</button></div>
+</form>
 """
         self.send_html(tenant["company_name"], body)
 
@@ -548,6 +565,20 @@ class SuperAdminApp(BaseHTTPRequestHandler):
         if updated:
             write_tenant_files(updated)
         self.redirect(f"/tenant/{quote(slug)}")
+
+    def handle_delete_tenant(self, slug: str) -> None:
+        tenant = find_tenant(slug)
+        if not tenant:
+            self.send_html("No encontrado", "<section><h2>Tenant no encontrado</h2></section>", 404)
+            return
+        form = self.read_form()
+        if form.get("confirm_slug") != slug:
+            self.show_tenant(slug, "Para eliminar, escriba el slug exacto del tenant.")
+            return
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute("delete from tenants where slug = ?", (slug,))
+        delete_generated_tenant_files(slug)
+        self.redirect("/")
 
 
 def main() -> None:
