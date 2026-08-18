@@ -58,6 +58,7 @@ AUTH_USER = os.getenv("COTAS_ADMIN_USER", "admin")
 AUTH_PASSWORD = os.getenv("COTAS_ADMIN_PASSWORD", "")
 AUTH_SECRET = os.getenv("COTAS_SECRET_KEY", "")
 COOKIE_NAME = "cotas_session"
+PDF_WORD_CACHE: dict[tuple[str, int, float], tuple[list[dict], float, float]] = {}
 
 
 def esc(value: object) -> str:
@@ -249,18 +250,39 @@ def renumber_candidates_consecutively(candidates: list[DimensionCandidate]) -> l
     return candidates
 
 
-def nearest_pdf_text(original_pdf: Path, page_number: int, x: float, y: float) -> tuple[str, dict[str, float]] | None:
-    with pdfplumber.open(str(original_pdf)) as pdf:
+def cached_pdf_words(original_pdf: Path, page_number: int) -> tuple[list[dict], float, float] | None:
+    resolved = original_pdf.resolve()
+    cache_key = (str(resolved), page_number, resolved.stat().st_mtime)
+    cached = PDF_WORD_CACHE.get(cache_key)
+    if cached:
+        return cached
+
+    with pdfplumber.open(str(resolved)) as pdf:
         if page_number < 1 or page_number > len(pdf.pages):
             return None
         page = pdf.pages[page_number - 1]
-        page_width = float(page.width)
-        page_height = float(page.height)
-        words = page.extract_words(
-            keep_blank_chars=False,
-            use_text_flow=False,
-            extra_attrs=[],
+        result = (
+            page.extract_words(
+                keep_blank_chars=False,
+                use_text_flow=False,
+                extra_attrs=[],
+            ),
+            float(page.width),
+            float(page.height),
         )
+
+    PDF_WORD_CACHE[cache_key] = result
+    if len(PDF_WORD_CACHE) > 48:
+        oldest_key = next(iter(PDF_WORD_CACHE))
+        PDF_WORD_CACHE.pop(oldest_key, None)
+    return result
+
+
+def nearest_pdf_text(original_pdf: Path, page_number: int, x: float, y: float) -> tuple[str, dict[str, float]] | None:
+    cached = cached_pdf_words(original_pdf, page_number)
+    if not cached:
+        return None
+    words, page_width, page_height = cached
 
     if not words:
         return None
@@ -1209,6 +1231,7 @@ class App(BaseHTTPRequestHandler):
     if (candidate.reason === "click add") pin.classList.add("manual");
     pin.textContent = candidate.number;
     pin.dataset.number = candidate.number;
+    pin.dataset.markerNumber = candidate.number;
     pin.title = `Eliminar cota #${{candidate.number}}`;
     pin.style.left = `${{(labelX / pageWidth) * 100}}%`;
     pin.style.top = `${{(labelY / pageHeight) * 100}}%`;
@@ -1241,7 +1264,7 @@ class App(BaseHTTPRequestHandler):
           return;
         }}
         setStatus(result.message);
-        window.location.reload();
+        document.querySelectorAll(`[data-marker-number="${{candidate.number}}"]`).forEach((node) => node.remove());
       }} catch (error) {{
         setStatus("No se pudo eliminar por conexion. Intente de nuevo.", true);
       }} finally {{
@@ -1261,6 +1284,7 @@ class App(BaseHTTPRequestHandler):
       if (length > 3) {{
         const leader = document.createElement("span");
         leader.className = "mark-leader";
+        leader.dataset.markerNumber = candidate.number;
         leader.style.left = `${{startX}}px`;
         leader.style.top = `${{startY}}px`;
         leader.style.width = `${{length}}px`;
@@ -1456,7 +1480,7 @@ class App(BaseHTTPRequestHandler):
             return
 
         candidates = [candidate for candidate in candidates if candidate.number != number]
-        self.save_job_candidates(job, candidates)
+        self.save_job_candidates(job, candidates, render_outputs=not wants_json)
         message = f"Se elimino la cota #{number}: {removed.text}"
         if wants_json:
             self.send_json({"ok": True, "message": message})
