@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 AUTH_USER = os.getenv("COTAS_SUPERADMIN_USER", "superadmin")
 AUTH_PASSWORD = os.getenv("COTAS_SUPERADMIN_PASSWORD", "")
 AUTH_SECRET = os.getenv("COTAS_SUPERADMIN_SECRET", "")
+PORTAL_PUBLIC_URL = os.getenv("COTAS_PORTAL_PUBLIC_URL", "https://cotasinteligentes.morpho3d.com/login")
 COOKIE_NAME = "cotas_superadmin"
 STATUSES = ["activo", "prueba", "suspendido", "vencido"]
 
@@ -406,8 +407,8 @@ class SuperAdminApp(BaseHTTPRequestHandler):
         for tenant in tenants:
             rows.append(
                 f"""<tr>
-  <td><a href="/tenant/{quote(tenant['slug'])}">{esc(tenant['company_name'])}</a><br><span class="muted">{esc(tenant['slug'])}</span></td>
-  <td>{esc(tenant['subdomain'])}</td>
+  <td><a href="/tenant/{quote(tenant['slug'])}">{esc(tenant['company_name'])}</a></td>
+  <td><code>{esc(tenant['slug'])}</code></td>
   <td>{esc(tenant['port'])}</td>
   <td><span class="pill {esc(tenant['rent_status'])}">{esc(tenant['rent_status'])}</span></td>
   <td>{esc(tenant['plan'])}</td>
@@ -424,7 +425,7 @@ class SuperAdminApp(BaseHTTPRequestHandler):
 <section>
   <h2>Tenants</h2>
   <table>
-    <thead><tr><th>Empresa</th><th>Subdominio</th><th>Puerto</th><th>Estado</th><th>Plan</th><th>Vence</th></tr></thead>
+    <thead><tr><th>Empresa</th><th>Codigo cliente</th><th>Puerto</th><th>Estado</th><th>Plan</th><th>Vence</th></tr></thead>
     <tbody>{table}</tbody>
   </table>
 </section>
@@ -440,10 +441,10 @@ class SuperAdminApp(BaseHTTPRequestHandler):
 <form method="post" action="/tenant/new">
   <h2>Nuevo tenant</h2>
   {note}
+  <p class="muted">El cliente entrara por el portal unico usando el codigo cliente.</p>
   <div class="grid">
     <div><label>Empresa</label><input name="company_name" required></div>
-    <div><label>Slug</label><input name="slug" placeholder="cliente1"></div>
-    <div><label>Subdominio</label><input name="subdomain" placeholder="cliente1.tudominio.com" required></div>
+    <div><label>Codigo cliente</label><input name="slug" placeholder="tagosa"></div>
     <div><label>Puerto interno</label><input name="port" type="number" value="{port}" required></div>
     <div><label>Usuario app</label><input name="app_user" value="admin" required></div>
     <div><label>Contrasena app</label><input name="app_password" value="{esc(password)}" required></div>
@@ -469,13 +470,13 @@ class SuperAdminApp(BaseHTTPRequestHandler):
         form = self.read_form()
         company_name = form.get("company_name", "")
         slug = slugify(form.get("slug") or company_name)
-        subdomain = form.get("subdomain", "")
+        subdomain = form.get("subdomain", "") or f"{slug}.portal.local"
         try:
             port = int(form.get("port", "0"))
         except ValueError:
             port = 0
-        if not company_name or not subdomain or port <= 0:
-            self.show_new_tenant("Empresa, subdominio y puerto son obligatorios.")
+        if not company_name or port <= 0:
+            self.show_new_tenant("Empresa y puerto son obligatorios.")
             return
         tenant = {
             "slug": slug,
@@ -536,8 +537,9 @@ class SuperAdminApp(BaseHTTPRequestHandler):
 <section>
   <h2>{esc(tenant['company_name'])}</h2>
   {note}
-  <p><strong>URL:</strong> {esc(tenant['subdomain'])}</p>
-  <p><strong>Login para compartir:</strong> usuario <code>{esc(tenant['app_user'])}</code> / contrasena <code>{esc(tenant['app_password'])}</code></p>
+  <p><strong>Portal clientes:</strong> {esc(PORTAL_PUBLIC_URL)}</p>
+  <p><strong>Codigo cliente:</strong> <code>{esc(tenant['slug'])}</code></p>
+  <p><strong>Login para compartir:</strong> codigo <code>{esc(tenant['slug'])}</code> / usuario <code>{esc(tenant['app_user'])}</code> / contrasena <code>{esc(tenant['app_password'])}</code></p>
   <p><strong>Storage:</strong> <code>{esc(tenant_storage(tenant['slug']))}</code></p>
 </section>
 <form method="post" action="/tenant/{quote(tenant['slug'])}/update">
