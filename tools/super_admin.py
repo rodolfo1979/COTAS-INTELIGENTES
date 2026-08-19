@@ -7,6 +7,7 @@ import json
 import os
 import re
 import secrets
+import socket
 import subprocess
 import sqlite3
 import sys
@@ -27,6 +28,8 @@ PROVISION_SCRIPT = os.getenv("COTAS_PROVISION_SCRIPT", "/usr/local/sbin/cotas-pr
 DEPROVISION_SCRIPT = os.getenv("COTAS_DEPROVISION_SCRIPT", "/usr/local/sbin/cotas-deprovision-tenant")
 COOKIE_NAME = "cotas_superadmin"
 STATUSES = ["activo", "prueba", "suspendido", "vencido"]
+TENANT_PORT_START = int(os.getenv("COTAS_TENANT_PORT_START", "8088"))
+TENANT_PORT_END = int(os.getenv("COTAS_TENANT_PORT_END", "8999"))
 
 
 def writable_dir(configured: str, fallbacks: list[Path]) -> Path:
@@ -137,11 +140,46 @@ def find_tenant(slug: str) -> dict | None:
     return dict(row) if row else None
 
 
-def next_port() -> int:
+def env_port(path: Path) -> int | None:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        if not line.startswith("COTAS_PORT="):
+            continue
+        value = line.split("=", 1)[1].strip().strip('"').strip("'")
+        return int(value) if value.isdigit() else None
+    return None
+
+
+def port_in_use(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.15)
+        return sock.connect_ex(("127.0.0.1", port)) == 0
+
+
+def known_tenant_ports() -> set[int]:
+    ports: set[int] = set()
     with sqlite3.connect(DB_PATH) as conn:
-        row = conn.execute("select max(port) from tenants").fetchone()
-    current = int(row[0]) if row and row[0] else 8087
-    return current + 1
+        rows = conn.execute("select port from tenants").fetchall()
+    ports.update(int(row[0]) for row in rows if row and row[0])
+    for folder in [GENERATED_DIR, Path("/etc/cotas-tenants")]:
+        if not folder.exists():
+            continue
+        for path in folder.glob("*.env"):
+            port = env_port(path)
+            if port:
+                ports.add(port)
+    return ports
+
+
+def next_port() -> int:
+    reserved = known_tenant_ports()
+    for port in range(TENANT_PORT_START, TENANT_PORT_END + 1):
+        if port not in reserved and not port_in_use(port):
+            return port
+    raise RuntimeError(f"No hay puertos libres entre {TENANT_PORT_START} y {TENANT_PORT_END}.")
 
 
 def tenant_storage(slug: str) -> Path:
@@ -200,10 +238,11 @@ def nginx_text(tenant: dict) -> str:
 def command_text(tenant: dict) -> str:
     slug = tenant["slug"]
     return f"""# Provisionar tenant {slug}
+cd /var/www/cotas-inteligentes
 sudo mkdir -p /etc/cotas-tenants
-sudo cp deploy/generated/{slug}.env /etc/cotas-tenants/{slug}.env
+sudo cp /var/www/cotas-inteligentes/deploy/generated/{slug}.env /etc/cotas-tenants/{slug}.env
 sudo chmod 600 /etc/cotas-tenants/{slug}.env
-sudo cp deploy/generated/nginx-{slug}.conf /etc/nginx/sites-available/{slug}
+sudo cp /var/www/cotas-inteligentes/deploy/generated/nginx-{slug}.conf /etc/nginx/sites-available/{slug}
 sudo ln -s /etc/nginx/sites-available/{slug} /etc/nginx/sites-enabled/{slug}
 sudo systemctl enable --now cotas-tenant@{slug}
 sudo nginx -t
@@ -517,7 +556,11 @@ class SuperAdminApp(BaseHTTPRequestHandler):
         company_name = form.get("company_name", "")
         slug = slugify(form.get("slug") or company_name)
         subdomain = form.get("subdomain", "") or f"{slug}.portal.local"
-        port = next_port()
+        try:
+            port = next_port()
+        except RuntimeError as exc:
+            self.show_new_tenant(str(exc))
+            return
         if not company_name:
             self.show_new_tenant("Empresa es obligatoria.")
             return
