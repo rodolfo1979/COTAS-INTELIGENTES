@@ -7,6 +7,7 @@ import json
 import os
 import re
 import secrets
+import subprocess
 import sqlite3
 import sys
 from datetime import datetime, timezone
@@ -21,6 +22,9 @@ AUTH_USER = os.getenv("COTAS_SUPERADMIN_USER", "superadmin")
 AUTH_PASSWORD = os.getenv("COTAS_SUPERADMIN_PASSWORD", "")
 AUTH_SECRET = os.getenv("COTAS_SUPERADMIN_SECRET", "")
 PORTAL_PUBLIC_URL = os.getenv("COTAS_PORTAL_PUBLIC_URL", "https://cotasinteligentes.morpho3d.com/login")
+AUTO_PROVISION = os.getenv("COTAS_AUTO_PROVISION", "").strip().lower() in {"1", "true", "yes", "on"}
+PROVISION_SCRIPT = os.getenv("COTAS_PROVISION_SCRIPT", "/usr/local/sbin/cotas-provision-tenant")
+DEPROVISION_SCRIPT = os.getenv("COTAS_DEPROVISION_SCRIPT", "/usr/local/sbin/cotas-deprovision-tenant")
 COOKIE_NAME = "cotas_superadmin"
 STATUSES = ["activo", "prueba", "suspendido", "vencido"]
 
@@ -223,6 +227,41 @@ def write_tenant_files(tenant: dict) -> None:
 def delete_generated_tenant_files(slug: str) -> None:
     for filename in [f"{slug}.env", f"nginx-{slug}.conf", f"{slug}-commands.txt"]:
         (GENERATED_DIR / filename).unlink(missing_ok=True)
+
+
+def valid_slug(slug: str) -> bool:
+    return bool(re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", slug))
+
+
+def run_admin_script(script: str, slug: str) -> tuple[bool, str]:
+    if not valid_slug(slug):
+        return False, "Codigo cliente invalido."
+    try:
+        result = subprocess.run(
+            ["sudo", script, slug],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"No se pudo ejecutar automatizacion: {exc}"
+    output = "\n".join(part.strip() for part in [result.stdout, result.stderr] if part.strip())
+    if result.returncode != 0:
+        return False, output or f"El script {script} fallo."
+    return True, output or "Automatizacion completada."
+
+
+def provision_tenant(slug: str) -> tuple[bool, str]:
+    if not AUTO_PROVISION:
+        return False, "Provisionamiento automatico desactivado. Active COTAS_AUTO_PROVISION=1."
+    return run_admin_script(PROVISION_SCRIPT, slug)
+
+
+def deprovision_tenant(slug: str) -> tuple[bool, str]:
+    if not AUTO_PROVISION:
+        return False, "Provisionamiento automatico desactivado."
+    return run_admin_script(DEPROVISION_SCRIPT, slug)
 
 
 def layout(title: str, body: str, authenticated: bool = True) -> bytes:
@@ -441,6 +480,7 @@ class SuperAdminApp(BaseHTTPRequestHandler):
   <h2>Nuevo tenant</h2>
   {note}
   <p class="muted">El cliente entrara por el portal unico usando el codigo cliente.</p>
+  <p class="muted">Provisionamiento automatico: {"activo" if AUTO_PROVISION else "desactivado"}.</p>
   <div class="grid">
     <div><label>Empresa</label><input name="company_name" required></div>
     <div><label>Codigo cliente</label><input name="slug" placeholder="tagosa"></div>
@@ -517,7 +557,9 @@ class SuperAdminApp(BaseHTTPRequestHandler):
             self.show_new_tenant(f"No se pudo crear: slug o puerto duplicado. {exc}")
             return
         write_tenant_files(tenant)
-        self.redirect(f"/tenant/{quote(slug)}")
+        ok, provision_message = provision_tenant(slug)
+        prefix = "Tenant creado y activado." if ok else "Tenant creado, pero no activado automaticamente."
+        self.show_tenant(slug, f"{prefix} {provision_message}")
 
     def show_tenant(self, slug: str, message: str = "") -> None:
         tenant = find_tenant(slug)
@@ -536,6 +578,7 @@ class SuperAdminApp(BaseHTTPRequestHandler):
   <p><strong>Codigo cliente:</strong> <code>{esc(tenant['slug'])}</code></p>
   <p><strong>Login para compartir:</strong> codigo <code>{esc(tenant['slug'])}</code> / usuario <code>{esc(tenant['app_user'])}</code> / contrasena <code>{esc(tenant['app_password'])}</code></p>
   <p><strong>Storage:</strong> <code>{esc(tenant_storage(tenant['slug']))}</code></p>
+  <p><strong>Puerto interno:</strong> <code>{esc(tenant['port'])}</code></p>
 </section>
 <form method="post" action="/tenant/{quote(tenant['slug'])}/update">
   <h2>Renta</h2>
@@ -653,6 +696,7 @@ class SuperAdminApp(BaseHTTPRequestHandler):
             return
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute("delete from tenants where slug = ?", (slug,))
+        deprovision_tenant(slug)
         delete_generated_tenant_files(slug)
         self.redirect("/")
 

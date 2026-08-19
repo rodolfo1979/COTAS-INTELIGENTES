@@ -1,0 +1,2 @@
+www-data ALL=(root) NOPASSWD: /usr/local/sbin/cotas-provision-tenant [a-z0-9]*
+www-data ALL=(root) NOPASSWD: /usr/local/sbin/cotas-deprovision-tenant [a-z0-9]*

@@ -181,3 +181,40 @@ sudo systemctl reload nginx
 
 Con esta opcion ya no hace falta crear Nginx ni DNS por cada tenant nuevo. Solo
 asegure que cada tenant tenga su servicio activo con un puerto unico.
+
+## Activacion automatica de tenants
+
+Para que el super admin active/desactive tenants sin entrar al VPS por cada
+cliente, instale los scripts root limitados:
+
+```bash
+cd /var/www/cotas-inteligentes
+sudo install -m 0750 -o root -g root deploy/cotas-provision-tenant.sh /usr/local/sbin/cotas-provision-tenant
+sudo install -m 0750 -o root -g root deploy/cotas-deprovision-tenant.sh /usr/local/sbin/cotas-deprovision-tenant
+sudo install -m 0440 -o root -g root deploy/sudoers-cotas-tenants /etc/sudoers.d/cotas-tenants
+sudo visudo -cf /etc/sudoers.d/cotas-tenants
+```
+
+Active el modo automatico:
+
+```bash
+sudo nano /etc/cotas-super-admin.env
+```
+
+Agregue:
+
+```text
+COTAS_AUTO_PROVISION=1
+COTAS_PROVISION_SCRIPT=/usr/local/sbin/cotas-provision-tenant
+COTAS_DEPROVISION_SCRIPT=/usr/local/sbin/cotas-deprovision-tenant
+```
+
+Reinicie:
+
+```bash
+sudo systemctl restart cotas-super-admin
+```
+
+Desde ese momento, al crear un tenant el panel copia su `.env` a
+`/etc/cotas-tenants/` y arranca `cotas-tenant@codigo`. Al eliminarlo del panel,
+desactiva el servicio y conserva el storage del cliente.
