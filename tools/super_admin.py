@@ -433,7 +433,6 @@ class SuperAdminApp(BaseHTTPRequestHandler):
         self.send_html("Tenants", body)
 
     def show_new_tenant(self, message: str = "") -> None:
-        port = next_port()
         password = secrets.token_urlsafe(10)
         secret = secrets.token_urlsafe(32)
         note = f"<p class='muted'>{esc(message)}</p>" if message else ""
@@ -445,7 +444,6 @@ class SuperAdminApp(BaseHTTPRequestHandler):
   <div class="grid">
     <div><label>Empresa</label><input name="company_name" required></div>
     <div><label>Codigo cliente</label><input name="slug" placeholder="tagosa"></div>
-    <div><label>Puerto interno</label><input name="port" type="number" value="{port}" required></div>
     <div><label>Usuario app</label><input name="app_user" value="admin" required></div>
     <div><label>Contrasena app</label><input name="app_password" value="{esc(password)}" required></div>
     <div><label>Plan</label><input name="plan" value="mensual"></div>
@@ -471,12 +469,9 @@ class SuperAdminApp(BaseHTTPRequestHandler):
         company_name = form.get("company_name", "")
         slug = slugify(form.get("slug") or company_name)
         subdomain = form.get("subdomain", "") or f"{slug}.portal.local"
-        try:
-            port = int(form.get("port", "0"))
-        except ValueError:
-            port = 0
-        if not company_name or port <= 0:
-            self.show_new_tenant("Empresa y puerto son obligatorios.")
+        port = next_port()
+        if not company_name:
+            self.show_new_tenant("Empresa es obligatoria.")
             return
         tenant = {
             "slug": slug,
