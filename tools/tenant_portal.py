@@ -188,8 +188,8 @@ class TenantPortal(BaseHTTPRequestHandler):
         secure = " Secure;" if self.headers.get("X-Forwarded-Proto") == "https" else ""
         self.send_response(HTTPStatus.SEE_OTHER)
         self.send_header("Location", "/admin")
-        self.send_header("Set-Cookie", f"{PORTAL_COOKIE}={quote(sign_value(slug))}; Path=/; HttpOnly;{secure} SameSite=Lax; Max-Age=28800")
-        self.send_header("Set-Cookie", f"{APP_COOKIE}={quote(app_session(username, tenant['secret_key']))}; Path=/; HttpOnly;{secure} SameSite=Lax; Max-Age=28800")
+        self.send_header("Set-Cookie", f"{PORTAL_COOKIE}={sign_value(slug)}; Path=/; HttpOnly;{secure} SameSite=Lax; Max-Age=28800")
+        self.send_header("Set-Cookie", f"{APP_COOKIE}={app_session(username, tenant['secret_key'])}; Path=/; HttpOnly;{secure} SameSite=Lax; Max-Age=28800")
         self.end_headers()
 
     def proxy_to_tenant(self, tenant: dict) -> None:
