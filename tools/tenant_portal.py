@@ -10,7 +10,7 @@ import sys
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,11 +36,6 @@ def valid_signed_value(value: str) -> str:
     payload, signature = value.rsplit(":", 1)
     expected = sign_value(payload).rsplit(":", 1)[1]
     return payload if hmac.compare_digest(signature, expected) else ""
-
-
-def app_session(username: str, tenant_secret: str) -> str:
-    signature = hmac.new(tenant_secret.encode("utf-8"), username.encode("utf-8"), hashlib.sha256).hexdigest()
-    return f"{username}:{signature}"
 
 
 def get_cookie(header: str, name: str) -> str:
@@ -71,6 +66,30 @@ def find_login_tenant(slug: str, username: str, password: str) -> dict | None:
     if not hmac.compare_digest(str(tenant.get("app_password", "")), password):
         return None
     return tenant
+
+
+def tenant_login_cookie(tenant: dict, username: str, password: str) -> tuple[bool, str]:
+    body = urlencode({"username": username, "password": password}).encode("utf-8")
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Content-Length": str(len(body)),
+        "Host": "127.0.0.1",
+    }
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", int(tenant["port"]), timeout=30)
+        conn.request("POST", "/login", body=body, headers=headers)
+        response = conn.getresponse()
+        response.read()
+    except OSError as exc:
+        return False, f"Tenant no disponible en puerto {tenant.get('port')}: {exc}"
+
+    if response.status != HTTPStatus.SEE_OTHER:
+        return False, f"El tenant rechazo el login interno con estado {response.status}."
+
+    for key, value in response.getheaders():
+        if key.lower() == "set-cookie" and value.startswith(f"{APP_COOKIE}="):
+            return True, value
+    return False, "El tenant no devolvio cookie de sesion."
 
 
 def login_page(message: str = "") -> bytes:
@@ -185,11 +204,17 @@ class TenantPortal(BaseHTTPRequestHandler):
         if not tenant:
             self.send_html(login_page("Codigo, usuario o contrasena incorrectos."), 403)
             return
+        ok, app_cookie = tenant_login_cookie(tenant, username, password)
+        if not ok:
+            self.send_html(login_page(app_cookie), 502)
+            return
         secure = " Secure;" if self.headers.get("X-Forwarded-Proto") == "https" else ""
         self.send_response(HTTPStatus.SEE_OTHER)
         self.send_header("Location", "/admin")
         self.send_header("Set-Cookie", f"{PORTAL_COOKIE}={sign_value(slug)}; Path=/; HttpOnly;{secure} SameSite=Lax; Max-Age=28800")
-        self.send_header("Set-Cookie", f"{APP_COOKIE}={app_session(username, tenant['secret_key'])}; Path=/; HttpOnly;{secure} SameSite=Lax; Max-Age=28800")
+        if secure and " Secure;" not in app_cookie:
+            app_cookie = app_cookie.replace(" HttpOnly;", f" HttpOnly;{secure}", 1)
+        self.send_header("Set-Cookie", app_cookie)
         self.end_headers()
 
     def proxy_to_tenant(self, tenant: dict) -> None:
