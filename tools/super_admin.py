@@ -176,13 +176,17 @@ def save_excel_config(slug: str, config: dict[str, str]) -> None:
 
 
 def env_text(tenant: dict) -> str:
+    def env_value(value: object) -> str:
+        text = str(value or "")
+        return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
     return "\n".join(
         [
-            f"COTAS_PORT={tenant['port']}",
-            f"COTAS_STORAGE={tenant_storage(tenant['slug'])}",
-            f"COTAS_ADMIN_USER={tenant['app_user']}",
-            f"COTAS_ADMIN_PASSWORD={tenant['app_password']}",
-            f"COTAS_SECRET_KEY={tenant['secret_key']}",
+            f"COTAS_PORT={env_value(tenant['port'])}",
+            f"COTAS_STORAGE={env_value(tenant_storage(tenant['slug']))}",
+            f"COTAS_ADMIN_USER={env_value(tenant['app_user'])}",
+            f"COTAS_ADMIN_PASSWORD={env_value(tenant['app_password'])}",
+            f"COTAS_SECRET_KEY={env_value(tenant['secret_key'])}",
             "",
         ]
     )
@@ -393,6 +397,10 @@ class SuperAdminApp(BaseHTTPRequestHandler):
             slug = unquote(path.removeprefix("/tenant/").removesuffix("/excel")).strip("/")
             self.handle_excel_config(slug)
             return
+        if path.startswith("/tenant/") and path.endswith("/provision"):
+            slug = unquote(path.removeprefix("/tenant/").removesuffix("/provision")).strip("/")
+            self.handle_provision_tenant(slug)
+            return
         if path.startswith("/tenant/") and path.endswith("/delete"):
             slug = unquote(path.removeprefix("/tenant/").removesuffix("/delete")).strip("/")
             self.handle_delete_tenant(slug)
@@ -579,6 +587,9 @@ class SuperAdminApp(BaseHTTPRequestHandler):
   <p><strong>Login para compartir:</strong> codigo <code>{esc(tenant['slug'])}</code> / usuario <code>{esc(tenant['app_user'])}</code> / contrasena <code>{esc(tenant['app_password'])}</code></p>
   <p><strong>Storage:</strong> <code>{esc(tenant_storage(tenant['slug']))}</code></p>
   <p><strong>Puerto interno:</strong> <code>{esc(tenant['port'])}</code></p>
+  <form class="inline" method="post" action="/tenant/{quote(tenant['slug'])}/provision">
+    <div class="actions"><button type="submit">Activar/Reparar servicio</button></div>
+  </form>
 </section>
 <form method="post" action="/tenant/{quote(tenant['slug'])}/update">
   <h2>Renta</h2>
@@ -650,6 +661,16 @@ class SuperAdminApp(BaseHTTPRequestHandler):
         if updated:
             write_tenant_files(updated)
         self.redirect(f"/tenant/{quote(slug)}")
+
+    def handle_provision_tenant(self, slug: str) -> None:
+        tenant = find_tenant(slug)
+        if not tenant:
+            self.send_html("No encontrado", "<section><h2>Tenant no encontrado</h2></section>", 404)
+            return
+        write_tenant_files(tenant)
+        ok, message = provision_tenant(slug)
+        prefix = "Servicio activado/reparado." if ok else "No se pudo activar/reparar."
+        self.show_tenant(slug, f"{prefix} {message}")
 
     def handle_excel_config(self, slug: str) -> None:
         import cgi
