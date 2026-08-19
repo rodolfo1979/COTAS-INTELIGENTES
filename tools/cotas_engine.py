@@ -2327,6 +2327,50 @@ def load_candidates(path: Path) -> list[DimensionCandidate]:
     return candidates
 
 
+def find_excel_config(output_xlsx: Path, job: dict[str, Any] | None = None) -> dict[str, str]:
+    config: dict[str, str] = {}
+    metadata = job or {}
+    config_path = metadata.get("excel_config_path")
+    if config_path:
+        candidate = Path(str(config_path))
+        if candidate.exists():
+            try:
+                payload = json.loads(candidate.read_text(encoding="utf-8"))
+                if isinstance(payload, dict):
+                    config.update({str(key): str(value) for key, value in payload.items() if value is not None})
+            except (OSError, json.JSONDecodeError):
+                pass
+
+    for parent in output_xlsx.resolve().parents:
+        candidate = parent / "excel_config.json"
+        if not candidate.exists():
+            continue
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict):
+            config.update({str(key): str(value) for key, value in payload.items() if value is not None})
+        break
+    return config
+
+
+def configured_logo_path(output_xlsx: Path, config: dict[str, str]) -> Path:
+    logo_path = str(config.get("logo_path", "")).strip()
+    if logo_path:
+        path = Path(logo_path)
+        if path.exists():
+            return path
+
+    for parent in output_xlsx.resolve().parents:
+        for name in ["logo.png", "logo.jpg", "logo.jpeg"]:
+            path = parent / name
+            if path.exists():
+                return path
+
+    return Path(__file__).resolve().parents[1] / "assets" / "smart-tool-logo.png"
+
+
 def generate_tolerance_workbook(
     candidates: list[DimensionCandidate],
     output_xlsx: Path,
@@ -2348,26 +2392,35 @@ def generate_tolerance_workbook(
     orange = Side(style="medium", color="F97316")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
     check_border = Border(left=orange, right=orange, top=orange, bottom=orange)
+    excel_config = find_excel_config(output_xlsx, metadata)
+    company_name = excel_config.get("company_name", "").strip()
+    document_title = excel_config.get("document_title", "INSPECCION FINAL DE PRODUCTO").strip() or "INSPECCION FINAL DE PRODUCTO"
+    document_code = excel_config.get("document_code", "SR-P-19-02 Rev 04 Emision: 30/07/25").strip()
 
     ws.merge_cells("A1:B5")
-    logo_path = Path(__file__).resolve().parents[1] / "assets" / "smart-tool-logo.png"
+    logo_path = configured_logo_path(output_xlsx, excel_config)
     if logo_path.exists():
         logo = ExcelImage(str(logo_path))
         logo.width = 150
         logo.height = 72
         ws.add_image(logo, "A1")
     else:
-        ws["A1"] = "SMART\nTOOL"
+        ws["A1"] = company_name or "SMART\nTOOL"
         ws["A1"].font = Font(bold=True, size=24, color="6B7280")
         ws["A1"].alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
     ws.merge_cells("C1:H1")
-    ws["C1"] = "INSPECCION FINAL DE PRODUCTO"
+    ws["C1"] = document_title
     ws["C1"].font = Font(bold=True, size=16, name="Times New Roman")
     ws["C1"].alignment = Alignment(horizontal="center")
     ws.merge_cells("I1:M1")
-    ws["I1"] = "SR-P-19-02 Rev 04 Emision: 30/07/25"
+    ws["I1"] = document_code
     ws["I1"].alignment = Alignment(horizontal="center")
+    if company_name:
+        ws.merge_cells("C2:H2")
+        ws["C2"] = company_name
+        ws["C2"].font = Font(bold=True, size=12)
+        ws["C2"].alignment = Alignment(horizontal="center")
 
     form_cells = [
         ("C3", "Cliente:"), ("D3", metadata.get("client", "")),

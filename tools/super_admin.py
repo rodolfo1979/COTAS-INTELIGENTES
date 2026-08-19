@@ -143,6 +143,33 @@ def tenant_storage(slug: str) -> Path:
     return TENANT_ROOT / slug
 
 
+def tenant_excel_config_path(slug: str) -> Path:
+    return tenant_storage(slug) / "excel_config.json"
+
+
+def tenant_logo_path(slug: str) -> Path:
+    return tenant_storage(slug) / "logo.png"
+
+
+def load_excel_config(slug: str) -> dict[str, str]:
+    path = tenant_excel_config_path(slug)
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {str(key): str(value) for key, value in payload.items() if value is not None}
+
+
+def save_excel_config(slug: str, config: dict[str, str]) -> None:
+    storage = tenant_storage(slug)
+    storage.mkdir(parents=True, exist_ok=True)
+    tenant_excel_config_path(slug).write_text(json.dumps(config, indent=2), encoding="utf-8")
+
+
 def env_text(tenant: dict) -> str:
     return "\n".join(
         [
@@ -322,6 +349,10 @@ class SuperAdminApp(BaseHTTPRequestHandler):
             slug = unquote(path.removeprefix("/tenant/").removesuffix("/update")).strip("/")
             self.handle_update_tenant(slug)
             return
+        if path.startswith("/tenant/") and path.endswith("/excel"):
+            slug = unquote(path.removeprefix("/tenant/").removesuffix("/excel")).strip("/")
+            self.handle_excel_config(slug)
+            return
         if path.startswith("/tenant/") and path.endswith("/delete"):
             slug = unquote(path.removeprefix("/tenant/").removesuffix("/delete")).strip("/")
             self.handle_delete_tenant(slug)
@@ -498,6 +529,8 @@ class SuperAdminApp(BaseHTTPRequestHandler):
             self.send_html("No encontrado", "<section><h2>Tenant no encontrado</h2></section>", 404)
             return
         write_tenant_files(tenant)
+        excel_config = load_excel_config(tenant["slug"])
+        logo_note = "Logo cargado" if tenant_logo_path(tenant["slug"]).exists() else "Sin logo personalizado"
         note = f"<p class='muted'>{esc(message)}</p>" if message else ""
         body = f"""
 <section>
@@ -516,6 +549,18 @@ class SuperAdminApp(BaseHTTPRequestHandler):
   </div>
   <label>Notas</label><textarea name="notes">{esc(tenant['notes'])}</textarea>
   <div class="actions"><button type="submit">Guardar renta</button><a class="button secondary" href="/">Volver</a></div>
+</form>
+<form method="post" action="/tenant/{quote(tenant['slug'])}/excel" enctype="multipart/form-data">
+  <h2>Personalizacion Excel</h2>
+  <p class="muted">Estos datos solo afectan los Excel nuevos o los que se regeneren con Guardar PDF/Excel y volver.</p>
+  <div class="grid">
+    <div><label>Nombre de compania</label><input name="company_name" value="{esc(excel_config.get('company_name') or tenant['company_name'])}"></div>
+    <div><label>Titulo del Excel</label><input name="document_title" value="{esc(excel_config.get('document_title') or 'INSPECCION FINAL DE PRODUCTO')}"></div>
+    <div><label>Codigo / revision</label><input name="document_code" value="{esc(excel_config.get('document_code') or 'SR-P-19-02 Rev 04 Emision: 30/07/25')}"></div>
+  </div>
+  <label>Logo PNG/JPG</label><input name="logo" type="file" accept=".png,.jpg,.jpeg,image/png,image/jpeg">
+  <p class="muted">{esc(logo_note)}. El logo se guarda en <code>{esc(tenant_logo_path(tenant['slug']))}</code>.</p>
+  <div class="actions"><button type="submit">Guardar personalizacion</button></div>
 </form>
 <section>
   <h2>Archivos generados</h2>
@@ -565,6 +610,40 @@ class SuperAdminApp(BaseHTTPRequestHandler):
         if updated:
             write_tenant_files(updated)
         self.redirect(f"/tenant/{quote(slug)}")
+
+    def handle_excel_config(self, slug: str) -> None:
+        import cgi
+
+        tenant = find_tenant(slug)
+        if not tenant:
+            self.send_html("No encontrado", "<section><h2>Tenant no encontrado</h2></section>", 404)
+            return
+
+        form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ={"REQUEST_METHOD": "POST"})
+        current = load_excel_config(slug)
+        config = {
+            "company_name": (form.getfirst("company_name", "") or "").strip(),
+            "document_title": (form.getfirst("document_title", "") or "").strip() or "INSPECCION FINAL DE PRODUCTO",
+            "document_code": (form.getfirst("document_code", "") or "").strip(),
+        }
+        if current.get("logo_path"):
+            config["logo_path"] = current["logo_path"]
+
+        logo_item = form["logo"] if "logo" in form else None
+        if logo_item is not None and getattr(logo_item, "filename", ""):
+            filename = str(getattr(logo_item, "filename", "")).lower()
+            if not filename.endswith((".png", ".jpg", ".jpeg")):
+                self.show_tenant(slug, "El logo debe ser PNG o JPG.")
+                return
+            storage = tenant_storage(slug)
+            storage.mkdir(parents=True, exist_ok=True)
+            logo_path = tenant_logo_path(slug)
+            with logo_path.open("wb") as handle:
+                handle.write(logo_item.file.read())
+            config["logo_path"] = str(logo_path)
+
+        save_excel_config(slug, config)
+        self.show_tenant(slug, "Personalizacion de Excel guardada.")
 
     def handle_delete_tenant(self, slug: str) -> None:
         tenant = find_tenant(slug)
