@@ -421,6 +421,7 @@ def valid_session(value: str) -> bool:
 
 
 def layout(title: str, body: str, authenticated: bool = True) -> bytes:
+    body_class = "mark-view" if title == "Agregar cotas faltantes" else ""
     nav = """
       <a href="/new">Nuevo plano</a>
       <a href="/history">Historial</a>
@@ -583,15 +584,62 @@ def layout(title: str, body: str, authenticated: bool = True) -> bytes:
     .muted {{ color: var(--muted); font-size: 13px; }}
     .ok {{ color: var(--green); font-weight: 700; }}
     iframe {{ width: 100%; height: 760px; border: 1px solid var(--line); border-radius: var(--radius); background: #fff; }}
-    .mark-wrap {{ overflow: auto; border: 1px solid var(--line); background: #fff; max-height: 820px; }}
+    body.mark-view main {{ width: min(100vw - 20px, 1600px); margin-top: 14px; }}
+    body.mark-view section {{
+      box-shadow: none;
+      padding: 14px;
+      margin-bottom: 12px;
+    }}
+    .mark-toolbar {{
+      position: sticky;
+      top: 76px;
+      z-index: 35;
+      background: rgba(255, 255, 255, 0.96);
+      backdrop-filter: blur(10px);
+    }}
+    .mark-toolbar h2 {{ margin-bottom: 6px; }}
+    .mark-toolbar .actions {{ margin-top: 12px; }}
+    .mark-wrap {{
+      overflow: auto;
+      border: 1px solid #cfd8e5;
+      border-radius: var(--radius);
+      background: #f8fafc;
+      max-height: calc(100vh - 190px);
+    }}
     .mark-stage {{ position: relative; width: 100%; }}
-    .mark-page {{ display: block; width: 100%; height: auto; cursor: crosshair; }}
-    .mark-pin {{ position: absolute; color: var(--accent); background: rgba(255, 255, 255, 0.72); border: 1px solid transparent; border-radius: 999px; min-width: 18px; height: 18px; padding: 0 4px; font-size: 11px; font-weight: 700; line-height: 16px; transform: translate(-50%, -50%); cursor: pointer; }}
-    .mark-pin:hover, .mark-pin:focus {{ border-color: var(--accent); outline: none; }}
-    .mark-pin.manual {{ color: #157347; border-color: #157347; background: rgba(255, 255, 255, 0.92); }}
+    .mark-page {{ display: block; width: 100%; height: auto; cursor: crosshair; background: #fff; }}
+    .mark-pin {{
+      position: absolute;
+      color: #b42318;
+      background: rgba(255, 255, 255, 0.9);
+      border: 1px solid rgba(180, 35, 24, 0.72);
+      border-radius: 999px;
+      min-width: 17px;
+      width: auto;
+      height: 17px;
+      min-height: 0;
+      padding: 0 4px;
+      font-size: 10px;
+      font-weight: 800;
+      line-height: 15px;
+      transform: translate(-50%, -50%);
+      cursor: pointer;
+      box-shadow: none;
+      display: block;
+    }}
+    .mark-pin:hover, .mark-pin:focus {{
+      background: #b42318;
+      color: #fff;
+      border-color: #b42318;
+      outline: none;
+      z-index: 8;
+    }}
+    .mark-pin.manual {{ color: #157347; border-color: #157347; background: rgba(255, 255, 255, 0.94); }}
+    .mark-pin.manual:hover, .mark-pin.manual:focus {{ background: #157347; color: #fff; }}
     .mark-delete-mode .mark-page {{ cursor: default; }}
-    .mark-delete-mode .mark-pin {{ color: #b42318; border-color: #b42318; background: rgba(255, 255, 255, 0.92); }}
-    .mark-leader {{ position: absolute; height: 1px; background: var(--accent); transform-origin: 0 50%; pointer-events: none; }}
+    .mark-delete-mode .mark-pin {{ color: #fff; border-color: #b42318; background: #b42318; }}
+    .mark-delete-mode .mark-pin.manual {{ border-color: #b42318; background: #b42318; color: #fff; }}
+    .mark-leader {{ position: absolute; height: 1px; background: rgba(180, 35, 24, 0.45); transform-origin: 0 50%; pointer-events: none; }}
     .mark-status {{ min-height: 18px; margin-top: 8px; }}
     @media (max-width: 820px) {{
       .grid {{ grid-template-columns: 1fr; }}
@@ -602,10 +650,12 @@ def layout(title: str, body: str, authenticated: bool = True) -> bytes:
       main {{ width: min(100vw - 22px, 1180px); margin-top: 16px; }}
       section, form {{ padding: 15px; }}
       nav a {{ padding: 8px 10px; }}
+      .mark-toolbar {{ top: 0; }}
+      .mark-wrap {{ max-height: calc(100vh - 170px); }}
     }}
   </style>
 </head>
-<body>
+<body class="{body_class}">
   <header>
     <div><h1>COTAS INTELIGENTES</h1><div class="version">Motor {esc(ENGINE_VERSION)}</div></div>
     <nav>
@@ -1273,7 +1323,7 @@ class App(BaseHTTPRequestHandler):
             for page in pages
         )
         body = f"""
-<section>
+<section class="mark-toolbar">
   <h2>Agregar cotas faltantes con mouse</h2>
   {notice}
   <p class="muted">Esta vista muestra el PDF ya numerado. Haga clic donde quiere colocar el numero; el sistema tomara la cota cercana para el Excel. Al terminar, use Guardar PDF/Excel y volver.</p>
@@ -1360,8 +1410,8 @@ class App(BaseHTTPRequestHandler):
           setStatus(result.message || "No se pudo eliminar la cota.", true);
           return;
         }}
-        setStatus(result.message);
-        document.querySelectorAll(`[data-marker-number="${{candidate.number}}"]`).forEach((node) => node.remove());
+        setStatus(result.message + " Actualizando vista...");
+        window.location.reload();
       }} catch (error) {{
         setStatus("No se pudo eliminar por conexion. Intente de nuevo.", true);
       }} finally {{
@@ -1577,10 +1627,10 @@ class App(BaseHTTPRequestHandler):
             return
 
         candidates = [candidate for candidate in candidates if candidate.number != number]
-        self.save_job_candidates(job, candidates, render_outputs=not wants_json)
+        self.save_job_candidates(job, candidates, render_outputs=True)
         message = f"Se elimino la cota #{number}: {removed.text}"
         if wants_json:
-            self.send_json({"ok": True, "message": message})
+            self.send_json({"ok": True, "message": message, "reload": True})
         else:
             self.show_mark(job_id, message)
 
