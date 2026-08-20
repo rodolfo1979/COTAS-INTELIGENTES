@@ -424,7 +424,7 @@ def layout(title: str, body: str, authenticated: bool = True) -> bytes:
     nav = """
       <a href="/new">Nuevo plano</a>
       <a href="/history">Historial</a>
-      <a href="/admin">Admin</a>
+      <a href="/admin">Panel</a>
       <a href="/logout">Salir</a>
 """ if authenticated else ""
     return f"""<!doctype html>
@@ -435,59 +435,154 @@ def layout(title: str, body: str, authenticated: bool = True) -> bytes:
   <title>{esc(title)}</title>
   <style>
     :root {{
-      --ink: #172033;
-      --muted: #5c667a;
-      --line: #d8dee9;
+      --ink: #111827;
+      --muted: #667085;
+      --line: #d7dee8;
       --panel: #ffffff;
-      --paper: #f4f6f8;
+      --paper: #f3f6fa;
+      --soft: #eef3f8;
+      --soft-2: #f8fafc;
       --accent: #c81e1e;
-      --accent-dark: #991b1b;
+      --accent-dark: #9f1717;
+      --accent-soft: #fff1f1;
+      --nav: #182230;
+      --nav-2: #243246;
       --green: #157347;
+      --shadow: 0 14px 36px rgba(16, 24, 40, 0.08);
+      --radius: 8px;
     }}
     * {{ box-sizing: border-box; }}
-    body {{ margin: 0; font-family: Arial, Helvetica, sans-serif; color: var(--ink); background: var(--paper); }}
-    header {{ background: #1f2937; color: #fff; padding: 16px 22px; display: flex; justify-content: space-between; align-items: center; gap: 20px; }}
-    header h1 {{ font-size: 18px; margin: 0; letter-spacing: 0; }}
-    .version {{ font-size: 11px; color: #cbd5e1; margin-top: 4px; }}
-    nav a {{ color: #fff; text-decoration: none; margin-left: 16px; font-size: 14px; }}
-    main {{ width: min(1120px, calc(100vw - 32px)); margin: 24px auto 48px; }}
-    section, form {{ background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 18px; margin-bottom: 18px; }}
+    html {{ background: var(--paper); }}
+    body {{
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+      color: var(--ink);
+      background:
+        linear-gradient(180deg, #f8fbff 0, var(--paper) 260px);
+      font-size: 14px;
+      line-height: 1.45;
+    }}
+    header {{
+      background: linear-gradient(135deg, var(--nav), var(--nav-2));
+      color: #fff;
+      padding: 18px 28px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 20px;
+      box-shadow: 0 10px 30px rgba(16, 24, 40, 0.22);
+      position: sticky;
+      top: 0;
+      z-index: 40;
+    }}
+    header h1 {{ font-size: 19px; margin: 0; letter-spacing: 0; font-weight: 800; }}
+    .version {{ font-size: 11px; color: #b7c4d6; margin-top: 4px; }}
+    nav {{ display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }}
+    nav a {{
+      color: #eef4ff;
+      text-decoration: none;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 7px;
+      padding: 8px 11px;
+      font-size: 13px;
+      font-weight: 700;
+      background: rgba(255, 255, 255, 0.06);
+    }}
+    nav a:hover {{ background: rgba(255, 255, 255, 0.13); }}
+    main {{ width: min(1180px, calc(100vw - 36px)); margin: 26px auto 52px; }}
+    section, form {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 20px;
+      margin-bottom: 18px;
+      box-shadow: var(--shadow);
+      overflow-x: auto;
+    }}
     .inline-form {{ background: transparent; border: 0; border-radius: 0; padding: 0; margin: 0; }}
-    h2 {{ font-size: 18px; margin: 0 0 14px; }}
-    label {{ display: block; font-size: 13px; font-weight: 700; margin-bottom: 6px; }}
-    input, select {{ width: 100%; border: 1px solid var(--line); border-radius: 6px; padding: 10px; font-size: 14px; background: #fff; }}
+    h2 {{ font-size: 20px; margin: 0 0 16px; letter-spacing: 0; }}
+    label {{ display: block; font-size: 12px; font-weight: 800; margin-bottom: 7px; color: #243246; }}
+    input, select {{
+      width: 100%;
+      border: 1px solid #cfd8e5;
+      border-radius: 7px;
+      padding: 11px 12px;
+      font-size: 14px;
+      background: #fff;
+      color: var(--ink);
+      min-height: 42px;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }}
+    input:focus, select:focus {{
+      outline: none;
+      border-color: #9db1cc;
+      box-shadow: 0 0 0 3px rgba(41, 112, 255, 0.12);
+    }}
+    input[type="file"] {{ padding: 8px 10px; }}
     .combo {{ position: relative; }}
-    .combo-menu {{ display: none; position: absolute; z-index: 30; top: calc(100% + 4px); left: 0; right: 0; max-height: 260px; overflow: auto; background: #fff; border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 10px 24px rgba(15, 23, 42, 0.18); }}
+    .combo-menu {{ display: none; position: absolute; z-index: 30; top: calc(100% + 6px); left: 0; right: 0; max-height: 260px; overflow: auto; background: #fff; border: 1px solid var(--line); border-radius: 7px; box-shadow: 0 18px 36px rgba(15, 23, 42, 0.18); }}
     .combo-menu.open {{ display: block; }}
     .combo-option {{ width: 100%; border: 0; border-radius: 0; background: #fff; color: var(--ink); display: block; text-align: left; padding: 9px 10px; font-size: 13px; font-weight: 400; }}
-    .combo-option:hover, .combo-option:focus {{ background: #eef1f5; color: var(--ink); }}
+    .combo-option:hover, .combo-option:focus {{ background: var(--soft); color: var(--ink); }}
     .combo-empty {{ padding: 10px; color: var(--muted); font-size: 13px; }}
-    .grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }}
-    .stats {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 18px; }}
-    .metric {{ background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 16px; }}
-    .metric strong {{ display: block; font-size: 28px; line-height: 1; margin-bottom: 6px; }}
+    .grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 15px; }}
+    .stats {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 15px; margin-bottom: 18px; }}
+    .metric {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 18px;
+      box-shadow: var(--shadow);
+    }}
+    .metric strong {{ display: block; font-size: 30px; line-height: 1; margin-bottom: 7px; letter-spacing: 0; }}
     .bar-row {{ display: grid; grid-template-columns: 220px 1fr 46px; align-items: center; gap: 10px; margin: 10px 0; font-size: 13px; }}
-    .bar-track {{ height: 12px; background: #eef1f5; border-radius: 999px; overflow: hidden; }}
+    .bar-track {{ height: 12px; background: var(--soft); border-radius: 999px; overflow: hidden; }}
     .bar-fill {{ height: 100%; background: var(--accent); }}
     .pager {{ display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 14px; flex-wrap: wrap; }}
     .pager-links {{ display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }}
-    .page-link {{ border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; text-decoration: none; color: var(--ink); background: #fff; font-size: 13px; }}
+    .page-link {{ border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px; text-decoration: none; color: var(--ink); background: #fff; font-size: 13px; }}
     .page-link.active {{ background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }}
-    .page-link.disabled {{ color: var(--muted); pointer-events: none; background: #eef1f5; }}
+    .page-link.disabled {{ color: var(--muted); pointer-events: none; background: var(--soft); }}
     .danger {{ background: #b42318; }}
     .danger:hover {{ background: #8f1d14; }}
     .wide {{ grid-column: span 2; }}
-    .actions {{ display: flex; align-items: center; gap: 10px; margin-top: 16px; }}
-    button, .button {{ border: 0; border-radius: 6px; background: var(--accent); color: #fff; padding: 10px 14px; font-weight: 700; cursor: pointer; text-decoration: none; display: inline-block; font-size: 14px; }}
+    .actions {{ display: flex; align-items: center; gap: 10px; margin-top: 17px; flex-wrap: wrap; }}
+    button, .button {{
+      border: 0;
+      border-radius: 7px;
+      background: var(--accent);
+      color: #fff;
+      padding: 10px 14px;
+      font-weight: 800;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 40px;
+      font-size: 14px;
+      box-shadow: 0 8px 18px rgba(200, 30, 30, 0.18);
+    }}
     button:hover, .button:hover {{ background: var(--accent-dark); }}
-    .secondary {{ background: #344054; }}
+    .secondary {{ background: #344054; box-shadow: 0 8px 18px rgba(52, 64, 84, 0.14); }}
     .secondary:hover {{ background: #1f2937; }}
-    table {{ width: 100%; border-collapse: collapse; background: #fff; border: 1px solid var(--line); }}
-    th, td {{ padding: 10px 9px; border-bottom: 1px solid var(--line); text-align: left; font-size: 13px; vertical-align: top; }}
-    th {{ background: #eef1f5; color: #283142; }}
+    table {{
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      overflow: hidden;
+      min-width: 760px;
+    }}
+    th, td {{ padding: 12px 11px; border-bottom: 1px solid var(--line); text-align: left; font-size: 13px; vertical-align: top; }}
+    tr:last-child td {{ border-bottom: 0; }}
+    th {{ background: var(--soft-2); color: #283142; font-size: 12px; text-transform: uppercase; letter-spacing: 0; }}
+    tbody tr:hover {{ background: #fbfdff; }}
     .muted {{ color: var(--muted); font-size: 13px; }}
     .ok {{ color: var(--green); font-weight: 700; }}
-    iframe {{ width: 100%; height: 760px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }}
+    iframe {{ width: 100%; height: 760px; border: 1px solid var(--line); border-radius: var(--radius); background: #fff; }}
     .mark-wrap {{ overflow: auto; border: 1px solid var(--line); background: #fff; max-height: 820px; }}
     .mark-stage {{ position: relative; width: 100%; }}
     .mark-page {{ display: block; width: 100%; height: auto; cursor: crosshair; }}
@@ -503,14 +598,16 @@ def layout(title: str, body: str, authenticated: bool = True) -> bytes:
       .stats {{ grid-template-columns: 1fr; }}
       .bar-row {{ grid-template-columns: 1fr; }}
       .wide {{ grid-column: span 1; }}
-      header {{ align-items: flex-start; flex-direction: column; }}
-      nav a {{ margin: 0 12px 0 0; }}
+      header {{ align-items: flex-start; flex-direction: column; padding: 16px; position: static; }}
+      main {{ width: min(100vw - 22px, 1180px); margin-top: 16px; }}
+      section, form {{ padding: 15px; }}
+      nav a {{ padding: 8px 10px; }}
     }}
   </style>
 </head>
 <body>
   <header>
-    <div><h1>Planos Cotas</h1><div class="version">Motor {esc(ENGINE_VERSION)}</div></div>
+    <div><h1>COTAS INTELIGENTES</h1><div class="version">Motor {esc(ENGINE_VERSION)}</div></div>
     <nav>
 {nav}
     </nav>
