@@ -118,12 +118,12 @@ def find_pdftoppm() -> str:
 
 
 def ensure_mark_images(job: dict) -> list[dict]:
-    numbered_pdf = Path(job["numbered_pdf"])
-    output_dir = numbered_pdf.parent / "mark_numbered_pages"
+    source_pdf = Path(job["original_pdf"])
+    output_dir = Path(job["numbered_pdf"]).parent / "mark_original_pages"
     output_dir.mkdir(parents=True, exist_ok=True)
     prefix = output_dir / "page"
 
-    with pdfplumber.open(str(numbered_pdf)) as pdf:
+    with pdfplumber.open(str(source_pdf)) as pdf:
         metadata = [
             {
                 "page": index,
@@ -134,7 +134,7 @@ def ensure_mark_images(job: dict) -> list[dict]:
             for index, page in enumerate(pdf.pages, start=1)
         ]
 
-    pdf_mtime = numbered_pdf.stat().st_mtime
+    pdf_mtime = source_pdf.stat().st_mtime
     stale = [
         item
         for item in metadata
@@ -142,7 +142,7 @@ def ensure_mark_images(job: dict) -> list[dict]:
     ]
     if stale:
         subprocess.run(
-            [find_pdftoppm(), "-png", "-r", "144", str(numbered_pdf), str(prefix)],
+            [find_pdftoppm(), "-png", "-r", "144", str(source_pdf), str(prefix)],
             check=True,
             capture_output=True,
             text=True,
@@ -1326,12 +1326,12 @@ class App(BaseHTTPRequestHandler):
 <section class="mark-toolbar">
   <h2>Agregar cotas faltantes con mouse</h2>
   {notice}
-  <p class="muted">Esta vista muestra el PDF ya numerado. Haga clic donde quiere colocar el numero; el sistema tomara la cota cercana para el Excel. Al terminar, use Guardar PDF/Excel y volver.</p>
+  <p class="muted">Esta vista usa el plano original y dibuja las numeraciones encima para que agregar y eliminar sea rapido. Al terminar, use Guardar PDF/Excel y volver.</p>
   <p class="muted mark-status" id="mark-status"></p>
   <div class="actions">
     <button class="button" form="finish-mark-form" type="submit">Guardar PDF/Excel y volver</button>
     <button class="button secondary" id="delete-mode-button" type="button">Modo eliminar</button>
-    <button class="button danger" form="undo-mark-form" type="submit">Deshacer ultimo agregado</button>
+    <button class="button danger" id="undo-mark-button" type="button">Deshacer ultimo agregado</button>
   </div>
 </section>
 <form id="mark-form" method="post" action="/mark/{quote(job_id)}">
@@ -1350,6 +1350,7 @@ class App(BaseHTTPRequestHandler):
   const statusNode = document.getElementById("mark-status");
   const form = document.getElementById("mark-form");
   const deleteButton = document.getElementById("delete-mode-button");
+  const undoButton = document.getElementById("undo-mark-button");
 
   function setStatus(message, isError = false) {{
     statusNode.textContent = message;
@@ -1393,7 +1394,6 @@ class App(BaseHTTPRequestHandler):
         setStatus("Espere un momento, guardando el cambio anterior...");
         return;
       }}
-      if (!confirm(`Eliminar la cota #${{candidate.number}}?`)) return;
       markBusy = true;
       setStatus(`Eliminando cota #${{candidate.number}}...`);
       try {{
@@ -1410,8 +1410,8 @@ class App(BaseHTTPRequestHandler):
           setStatus(result.message || "No se pudo eliminar la cota.", true);
           return;
         }}
-        setStatus(result.message + " Actualizando vista...");
-        window.location.reload();
+        setStatus(result.message);
+        removeMarker(candidate.number);
       }} catch (error) {{
         setStatus("No se pudo eliminar por conexion. Intente de nuevo.", true);
       }} finally {{
@@ -1444,6 +1444,40 @@ class App(BaseHTTPRequestHandler):
   deleteButton.addEventListener("click", () => {{
     deleteMode = !deleteMode;
     updateDeleteMode();
+  }});
+
+  function removeMarker(number) {{
+    document.querySelectorAll(`[data-marker-number="${{number}}"]`).forEach((node) => node.remove());
+  }}
+
+  undoButton.addEventListener("click", async () => {{
+    if (markBusy) {{
+      setStatus("Espere un momento, guardando el cambio anterior...");
+      return;
+    }}
+    markBusy = true;
+    setStatus("Deshaciendo ultimo agregado...");
+    try {{
+      const response = await fetch(`/mark/{quote(job_id)}/undo`, {{
+        method: "POST",
+        headers: {{
+          "Content-Type": "application/x-www-form-urlencoded",
+          "X-Requested-With": "fetch",
+        }},
+        body: "",
+      }});
+      const result = await response.json();
+      if (!response.ok || !result.ok) {{
+        setStatus(result.message || "No se pudo deshacer.", true);
+        return;
+      }}
+      removeMarker(result.number);
+      setStatus(result.message);
+    }} catch (error) {{
+      setStatus("No se pudo deshacer por conexion. Intente de nuevo.", true);
+    }} finally {{
+      markBusy = false;
+    }}
   }});
   updateDeleteMode();
 
@@ -1577,20 +1611,32 @@ class App(BaseHTTPRequestHandler):
 
     def handle_mark_undo(self, job_id: str) -> None:
         job = self.find_job(job_id)
+        wants_json = self.headers.get("X-Requested-With") == "fetch"
         if not job:
-            self.send_html("No encontrado", "<section><h2>Trabajo no encontrado</h2></section>", 404)
+            if wants_json:
+                self.send_json({"ok": False, "message": "Trabajo no encontrado."}, 404)
+            else:
+                self.send_html("No encontrado", "<section><h2>Trabajo no encontrado</h2></section>", 404)
             return
 
         candidates = self.load_job_candidates(job)
         click_candidates = [candidate for candidate in candidates if candidate.reason == "click add"]
         if not click_candidates:
-            self.show_mark(job_id, "No hay cotas agregadas con mouse para deshacer.")
+            message = "No hay cotas agregadas con mouse para deshacer."
+            if wants_json:
+                self.send_json({"ok": False, "message": message}, 404)
+            else:
+                self.show_mark(job_id, message)
             return
 
         last_added = max(click_candidates, key=lambda candidate: candidate.number)
         candidates = [candidate for candidate in candidates if candidate is not last_added]
-        self.save_job_candidates(job, candidates)
-        self.show_mark(job_id, f"Se deshizo la cota #{last_added.number}: {last_added.text}")
+        self.save_job_candidates(job, candidates, render_outputs=not wants_json)
+        message = f"Se deshizo la cota #{last_added.number}: {last_added.text}"
+        if wants_json:
+            self.send_json({"ok": True, "message": message, "number": last_added.number})
+        else:
+            self.show_mark(job_id, message)
 
     def handle_mark_delete(self, job_id: str) -> None:
         job = self.find_job(job_id)
@@ -1627,10 +1673,10 @@ class App(BaseHTTPRequestHandler):
             return
 
         candidates = [candidate for candidate in candidates if candidate.number != number]
-        self.save_job_candidates(job, candidates, render_outputs=True)
+        self.save_job_candidates(job, candidates, render_outputs=not wants_json)
         message = f"Se elimino la cota #{number}: {removed.text}"
         if wants_json:
-            self.send_json({"ok": True, "message": message, "reload": True})
+            self.send_json({"ok": True, "message": message, "number": number})
         else:
             self.show_mark(job_id, message)
 
