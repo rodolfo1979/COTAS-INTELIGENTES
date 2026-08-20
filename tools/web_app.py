@@ -641,6 +641,38 @@ def layout(title: str, body: str, authenticated: bool = True) -> bytes:
     .mark-delete-mode .mark-pin.manual {{ border-color: #b42318; background: #b42318; color: #fff; }}
     .mark-leader {{ position: absolute; height: 1px; background: rgba(180, 35, 24, 0.45); transform-origin: 0 50%; pointer-events: none; }}
     .mark-status {{ min-height: 18px; margin-top: 8px; }}
+    .saving-overlay {{
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      background: rgba(17, 24, 39, 0.42);
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }}
+    .saving-overlay.active {{ display: flex; }}
+    .saving-card {{
+      width: min(420px, 100%);
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 24px;
+      text-align: center;
+      box-shadow: 0 24px 60px rgba(16, 24, 40, 0.24);
+    }}
+    .saving-spinner {{
+      width: 42px;
+      height: 42px;
+      border: 4px solid #fee4e2;
+      border-top-color: var(--accent);
+      border-radius: 999px;
+      margin: 0 auto 14px;
+      animation: spin 0.8s linear infinite;
+    }}
+    .saving-card strong {{ display: block; font-size: 17px; margin-bottom: 6px; }}
+    .saving-card p {{ margin: 0; }}
+    @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
     @media (max-width: 820px) {{
       .grid {{ grid-template-columns: 1fr; }}
       .stats {{ grid-template-columns: 1fr; }}
@@ -1341,6 +1373,13 @@ class App(BaseHTTPRequestHandler):
 </form>
 <form id="finish-mark-form" method="post" action="/mark/{quote(job_id)}/finish"></form>
 <form id="undo-mark-form" method="post" action="/mark/{quote(job_id)}/undo"></form>
+<div class="saving-overlay" id="saving-overlay" role="status" aria-live="polite" aria-modal="true">
+  <div class="saving-card">
+    <div class="saving-spinner" aria-hidden="true"></div>
+    <strong>Generando PDF y Excel</strong>
+    <p class="muted">Espere un momento. El sistema esta guardando los cambios finales.</p>
+  </div>
+</div>
 {page_blocks}
 <script>
   let markBusy = false;
@@ -1349,8 +1388,10 @@ class App(BaseHTTPRequestHandler):
   const initialCandidates = {candidates_json};
   const statusNode = document.getElementById("mark-status");
   const form = document.getElementById("mark-form");
+  const finishForm = document.getElementById("finish-mark-form");
   const deleteButton = document.getElementById("delete-mode-button");
   const undoButton = document.getElementById("undo-mark-button");
+  const savingOverlay = document.getElementById("saving-overlay");
 
   function setStatus(message, isError = false) {{
     statusNode.textContent = message;
@@ -1444,6 +1485,16 @@ class App(BaseHTTPRequestHandler):
   deleteButton.addEventListener("click", () => {{
     deleteMode = !deleteMode;
     updateDeleteMode();
+  }});
+
+  finishForm.addEventListener("submit", () => {{
+    markBusy = true;
+    savingOverlay.classList.add("active");
+    setStatus("Generando PDF y Excel. Espere un momento...");
+    document.querySelectorAll("button, .button").forEach((node) => {{
+      if (node.tagName === "BUTTON") node.disabled = true;
+      node.style.pointerEvents = "none";
+    }});
   }});
 
   function removeMarker(number) {{
